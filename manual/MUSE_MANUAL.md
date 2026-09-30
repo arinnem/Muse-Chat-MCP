@@ -21,6 +21,9 @@ Muse là một **agent**, không phải API render. Nó tạo video/ảnh ngay t
    có thể dao động giữa các lần tạo → **luôn QC từng khung** (đặc biệt với UGC có mặt người thật).
 4. **Link tải công khai nhưng có hạn** (Muse báo thời điểm hết hạn, ~vài ngày) → **tải về ngay**.
 
+> 🔢 **Thông số kỹ thuật ĐO THỰC TẾ** (độ phân giải, số giây, fps, dung lượng, định dạng): xem **§10**.
+> Lưu ý: Muse tự báo "720×1280" cho video, nhưng **đo thực tế là ~704×1248** — **tin số đo, không tin lời khai**.
+
 ---
 
 ## 1. Bảng khả năng
@@ -171,3 +174,38 @@ node "E:\AI\Muse MCP\mcp-server\muse-cli.mjs" --media "Video creation capability
 ## 9. Phụ lục — nguyên văn trả lời của Muse
 
 Xem `manual/raw/batch-1.md` … `batch-4.md` (lưu nguyên văn, kèm câu hỏi) để đối chiếu và cập nhật.
+Đáp án phần thông số kỹ thuật: `manual/raw/specs.md`. Số đo thực tế: `manual/raw/measured-specs.md`.
+
+---
+
+## 10. Thông số kỹ thuật — ĐO THỰC TẾ (ffprobe)
+
+Số liệu dưới đây là **đo trực tiếp** từ file Muse tạo ra (tải bằng `muse-cli --media --download`, rồi `ffprobe`),
+**không phải suy đoán**. Muse tự khai "720×1280" cho video nhưng **đo thực tế là ~704×1248** → **tin số đo**.
+
+### Video (dọc 9:16, text→video)
+| Thuộc tính | Giá trị ĐO ĐƯỢC |
+|---|---|
+| Độ phân giải | **704×1248** (≈9:16; lần khác đo được 640×1200 — có dao động) |
+| Thời lượng mỗi clip | **10.000 giây — cố định**, KHÔNG chọn được (không có 5s/8s) |
+| FPS | **24** |
+| Video codec | **H.264 (yuv420p)** |
+| Audio | **AAC mono 24 kHz** (~100 kbps) |
+| Dung lượng | **~2.9 MB / clip 10s** (~2.3 Mbps) |
+| Container | **MP4** |
+| Chọn độ phân giải? | ❌ không. **1080p chưa từng thấy** — nhiều khả năng không có |
+
+### Ảnh
+| Tỉ lệ | Độ phân giải ĐO ĐƯỢC | Định dạng | Dung lượng |
+|---|---|---|---|
+| 1:1 | **1600×1600** | webp (mặc định) | ~0.45 MB |
+| 9:16 | **1152×2048** | webp | ~0.36 MB |
+| — | tối đa **4 ảnh / lần** | webp (có thể xin png/jpg) | — |
+
+> Video/ảnh **inline trong chat dùng `blob:`** (không phải link http). Cầu MCP đã xử lý: `--media --download`
+> đọc blob ngay trong trang. Khi Muse **chia sẻ link** trong tin nhắn thì link dạng `muse.ai/files/…` (có hạn).
+
+### Cách tự đo lại
+```powershell
+ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,duration:format=size -of default=nw=1 "<file>"
+```

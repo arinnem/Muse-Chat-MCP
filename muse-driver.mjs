@@ -545,7 +545,7 @@ class MuseDriver {
           const media = [...new Set(
             [...el.querySelectorAll('a[href], img[src], video[src], source[src]')]
               .map((n) => n.href || n.currentSrc || n.src || (n.getAttribute && n.getAttribute('src')))
-              .filter((u) => u && /^https?:\/\//i.test(u)),
+              .filter((u) => u && /^(https?:|blob:)/i.test(u)),
           )]
           return { role: el.getAttribute('data-message-role') || '', text, ...(media.length ? { media } : {}) }
         })
@@ -570,7 +570,7 @@ class MuseDriver {
           const urls = [...new Set(
             [...el.querySelectorAll('a[href], img[src], video[src], source[src]')]
               .map((n) => n.href || n.currentSrc || n.src || (n.getAttribute && n.getAttribute('src')))
-              .filter((u) => u && /^https?:\/\//i.test(u)),
+              .filter((u) => u && /^(https?:|blob:)/i.test(u)),
           )]
           const text = (el.innerText || '').replace(/^(You:|User message:|Assistant message:)\s*/i, '').replace(/\s+/g, ' ').trim()
           return { index, role, text: text.slice(0, 120), urls }
@@ -590,20 +590,44 @@ class MuseDriver {
   async _downloadMedia(urls, dir) {
     const outDir = dir || path.join(__dirname, 'downloads')
     fs.mkdirSync(outDir, { recursive: true })
+    const p = this.page
     const saved = []
     for (const u of urls) {
       try {
-        const res = await fetch(u)
-        if (!res.ok) throw new Error(`HTTP ${res.status}`)
-        const buf = Buffer.from(await res.arrayBuffer())
+        let buf = null
+        let mime = ''
+        // Prefer fetching inside the page: handles blob: URLs and cookie-authed http.
+        if (p && !p.isClosed()) {
+          const r = await p.evaluate(async (url) => {
+            try {
+              const res = await fetch(url)
+              const ab = await res.arrayBuffer()
+              const bytes = new Uint8Array(ab)
+              let s = ''
+              const CH = 0x8000
+              for (let i = 0; i < bytes.length; i += CH) s += String.fromCharCode.apply(null, bytes.subarray(i, i + CH))
+              return { ok: res.ok, status: res.status, mime: res.headers.get('content-type') || '', b64: btoa(s), len: bytes.length }
+            } catch (e) { return { ok: false, error: String(e) } }
+          }, u)
+          if (r && r.ok && r.b64) { buf = Buffer.from(r.b64, 'base64'); mime = r.mime }
+          else if (r && r.error) throw new Error(r.error)
+        }
+        if (!buf) {
+          const res = await fetch(u)
+          if (!res.ok) throw new Error(`HTTP ${res.status}`)
+          buf = Buffer.from(await res.arrayBuffer())
+          mime = res.headers.get('content-type') || ''
+        }
+        const ext = mime.includes('mp4') ? '.mp4' : mime.includes('webm') ? '.webm' : mime.includes('webp') ? '.webp'
+          : mime.includes('png') ? '.png' : (mime.includes('jpeg') || mime.includes('jpg')) ? '.jpg' : mime.includes('gif') ? '.gif' : ''
         let name = 'media'
-        try { name = decodeURIComponent(new URL(u).pathname.split('/').pop() || 'media') } catch { /* keep */ }
-        if (!path.extname(name)) name += '.bin'
+        try { name = decodeURIComponent(new URL(u).pathname.split('/').pop() || 'media') } catch { /* blob: -> uuid */ }
+        if (!path.extname(name)) name += ext || '.bin'
         const dest = path.join(outDir, `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}-${name}`)
         fs.writeFileSync(dest, buf)
-        saved.push({ url: u, file: dest, bytes: buf.length })
+        saved.push({ url: u.startsWith('blob:') ? 'blob' : u, file: dest, bytes: buf.length, mime })
       } catch (e) {
-        saved.push({ url: u, error: String((e && e.message) || e) })
+        saved.push({ url: u.startsWith('blob:') ? 'blob' : u, error: String((e && e.message) || e) })
       }
     }
     return { dir: outDir, saved }
