@@ -229,6 +229,48 @@ So the only robust options are (1) drive the real browser (this project) or (2) 
 
 ---
 
+## Reproduce this yourself (HAR → coding agent)
+
+You don't have to reverse-engineer anything by hand. Capture what the app actually does,
+then let a coding agent read it and write the bridge for you.
+
+**Requirements: Google Chrome + some kind of coding agent** — Claude Code, OpenAI Codex,
+opencode, Cursor, Cline, Aider, … anything that can read files.
+
+1. **Open the app.** In Chrome, go to `https://muse.ai` and sign in with **your own** account.
+2. **Open DevTools.** Press `F12` → **Network** tab → tick **Preserve log**. Leave it open for
+   the whole session so the WebSocket frames get recorded.
+3. **Filter the traffic.** Click **Fetch/XHR** to see the HTTP calls, and **WS** to see the chat
+   WebSocket. Muse's chat is a **WebSocket**, not a REST call, so you want *both*.
+4. **Send a few prompts** (e.g. `hi`, `what can you do?`) so real traffic is recorded.
+5. **Export a HAR.** Right-click anywhere in the request list → **Save all as HAR with content**.
+   Pick the version **"with sensitive data"** — the sanitized export strips cookies and
+   WebSocket frames, which makes the capture useless.
+6. **Hand it to your coding agent.** Drop the file into your project (e.g. `captures/muse.har`)
+   and give the agent a prompt like this:
+
+   ```text
+   Analyze captures/muse.har from a web chat app and report:
+   1) The chat transport: REST/SSE vs WebSocket. List every relevant endpoint
+      (auth, session, wake, chat) and how authentication works (cookies? tokens?).
+   2) The WebSocket: URL, subprotocol, and whether frames are encrypted/binary —
+      e.g. a Noise handshake (X25519 + HKDF + AES-GCM + Ed25519) — plus the RPC method names.
+   3) The most robust way to build a local bridge that exposes this chat as
+      (a) an MCP tool and (b) an OpenAI-compatible /v1 endpoint, given there is no official API.
+   ```
+
+   The agent will read the HAR and tell you exactly what to build. In our capture it surfaced
+   `POST /api/auth/check`, `GET /api/session`, `POST /api/hatch/vm/wake`, and the **encrypted**
+   `wss://hatch.metaaivm.com/v1/noise` WebSocket with a `chat.stream` method — which is precisely
+   why this project **drives the real browser** instead of calling a REST API. If your agent
+   reaches the same conclusion, you're spot on.
+
+> [!WARNING]
+> A HAR "with sensitive data" contains your **session cookies and access tokens**. Never commit
+> it, never paste it into a chat, never share it. This repo's `.gitignore` already blocks `*.har`.
+
+---
+
 ## Configuration (environment)
 
 | Variable | Default | Meaning |

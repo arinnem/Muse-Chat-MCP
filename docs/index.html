@@ -201,6 +201,29 @@ for chunk in r:
   <p class="lead" style="margin-top:16px">Muse chat is <strong>not</strong> REST — it's an RPC gateway over an encrypted WebSocket (<code>wss://hatch.metaaivm.com/v1/noise</code>, Noise: X25519 + HKDF + AES‑GCM + Ed25519). The app does all crypto itself; we read the rendered reply. A headless Noise client is on the roadmap.</p>
 </section>
 
+<section id="har" class="wrap">
+  <h2>Reproduce it yourself</h2>
+  <p class="lead">Requirements: <strong>Chrome + any coding agent</strong> (Claude Code, Codex, opencode, Cursor…). Capture the app's real traffic, then let the agent write the bridge.</p>
+  <div class="grid cols-2">
+    <div class="card">
+      <h3>1 · Capture</h3>
+      <p>Chrome → <span class="kbd">F12</span> → <b>Network</b> → tick <i>Preserve log</i>. Filter <b>Fetch/XHR</b> and <b>WS</b>. Send a few prompts, then right-click → <b>Save all as HAR with content → with sensitive data</b>.</p>
+    </div>
+    <div class="card">
+      <h3>2 · Hand it to an agent</h3>
+      <p>Give the <code>.har</code> to your coding agent and ask it to identify the transport, endpoints, auth, and the encrypted WebSocket — then design an MCP + OpenAI bridge.</p>
+    </div>
+  </div>
+  <pre style="margin-top:16px"><button class="copy">copy</button>Analyze captures/muse.har from a web chat app and report:
+1) The chat transport: REST/SSE vs WebSocket. List the endpoints (auth, session,
+   wake, chat) and how auth works (cookies? tokens?).
+2) The WebSocket: URL, subprotocol, whether frames are encrypted/binary (e.g. a
+   Noise handshake: X25519 + HKDF + AES-GCM + Ed25519), and the RPC method names.
+3) The most robust way to build a local bridge exposing this chat as (a) an MCP
+   tool and (b) an OpenAI-compatible /v1 endpoint — given there is no official API.</pre>
+  <div class="note" style="margin-top:16px">A HAR "with sensitive data" contains your session cookies and tokens — never commit or share it. (This repo's <code>.gitignore</code> blocks <code>*.har</code>.)</div>
+</section>
+
 <section id="config" class="wrap">
   <h2>Configuration</h2>
   <table>
