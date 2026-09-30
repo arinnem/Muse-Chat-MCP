@@ -241,3 +241,19 @@ Yêu cầu "zoom + logo + chữ" → Muse tự làm **hậu kỳ bằng ffmpeg**
 ➜ **~54s nội dung + ~6s chuyển cảnh** trên timeline 60s; phần còn lại là **hiệu ứng hậu kỳ** (zoom, logo, chữ, màu, phụ đề).
 
 > Artifact test: `E:\AI\CaloTrack V1\marketing_export\muse_ugc_test\` (ảnh, video UGC, video hiệu ứng, frames).
+
+---
+
+## 12. Duyệt 3 QC (bắt buộc trước khi dùng)
+
+| Gate | Kiểm gì | Kết quả |
+|---|---|---|
+| **QC1 — Identity** | mặt/kính/tóc khớp Lai Đức (so ≥3 khung với 3 ref) | khớp → tiếp; **sai mặt → `REJECTED_IDENTITY_FAIL`** |
+| **QC2 — Content & chữ** | lời thoại, chữ Việt **đúng dấu**, phrase-only, safe zone, proof trước CTA, claim guardrail | đạt → tiếp |
+| **QC3 — Technical** | 9:16, ≥704×1248, 24fps, H.264+AAC, đúng thời lượng, không watermark | đạt → tiếp |
+
+**Chỉ duyệt khi 3/3 PASS.** FAIL bất kỳ gate → REWORK + ghi `calotrack_asset_run_registry.json`.
+
+- Chạy QC kỹ thuật + trích khung: `node manual/qc-video.mjs <video> [outDir]`
+- Ví dụ đã ghi: run `muse-video01-tracking-one-button-2026-09-30` → **REJECTED_IDENTITY_FAIL**
+  (Muse chỉ cho "vibe match", KHÔNG phải mặt thật Lai Đức → cần footage thật / face-composite mới PASS QC1).
