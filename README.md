@@ -25,6 +25,7 @@ Plus a tiny **CLI** (`muse-cli.mjs`) for one-shot generation from scripts.
 - **Prompt-injected tool calling** — expose OpenAI `tools` to Muse and get `tool_calls` back.
 - **Attachments** — send images/video with a prompt (MCP `files`, OpenAI `image_url` parts, CLI `-f`).
 - **Sessions & media** — list/open/read/send in any Muse chat, and pull out the images/videos Muse generates (links + download).
+- **Muse Manual** — a living guide to Muse's video/image/content capabilities at [`manual/MUSE_MANUAL.md`](manual/MUSE_MANUAL.md), regenerated with `node manual/interview.mjs`.
 - **Reuses your existing login** via a dedicated Chrome profile, or attaches to a Chrome you already run with `--remote-debugging-port=9222`.
 - **Never kills your browser**: when attached over CDP it only *disconnects* on close.
 - **Resilient**: if the profile is locked by a running Chrome, it auto-attaches over CDP instead of failing.
