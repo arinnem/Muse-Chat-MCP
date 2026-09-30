@@ -23,6 +23,7 @@
  *   auth check    : POST /api/auth/check  -> { ok, viewer_id, access_token }
  * ------------------------------------------------------------------
  */
+import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -224,6 +225,17 @@ class MuseDriver {
 
   async _newChat() {
     const p = await this.requirePage()
+    await this.gotoApp()
+    // Prefer the app's own "New side chat" control (reliable); fall back to the home composer.
+    try {
+      const btn = p.getByRole('button', { name: /new side chat/i })
+      if (await btn.count()) {
+        await btn.first().click({ timeout: 5000 })
+        await sleep(1200)
+        await this.waitForComposer()
+        return { ok: true, url: p.url() }
+      }
+    } catch { /* fall through */ }
     await p.goto(APP_URL, { waitUntil: 'domcontentloaded', timeout: LAUNCH_TIMEOUT })
     await this.waitForComposer()
     return { ok: true, url: p.url() }
@@ -460,20 +472,24 @@ class MuseDriver {
   }
 
   /** List the chats shown in the Muse sidebar (Main chat, Channels, Side chats). */
-  async listChats() {
-    return this._serial(() => this._listChats())
+  async listChats(query) {
+    return this._serial(() => this._listChats(query))
   }
 
-  async _listChats() {
+  async _listChats(query) {
     const p = await this.requirePage()
     await this.gotoApp()
     await sleep(400)
-    const chats = await p.locator(SELECTORS.threadRow).evaluateAll((els) =>
+    let chats = await p.locator(SELECTORS.threadRow).evaluateAll((els) =>
       els.map((el) => ({
         title: (el.innerText || '').replace(/\s+/g, ' ').replace(/\s*More thread actions\s*$/i, '').trim(),
         active: el.getAttribute('aria-current') === 'page' || el.getAttribute('aria-selected') === 'true',
       })).filter((c) => c.title),
     )
+    if (query) {
+      const q = String(query).toLowerCase()
+      chats = chats.filter((c) => c.title.toLowerCase().includes(q))
+    }
     return { chats, threadUrl: p.url() }
   }
 
@@ -524,13 +540,73 @@ class MuseDriver {
     const p = await this.requirePage()
     const all = await p.locator(SELECTORS.message).evaluateAll((els) =>
       els
-        .map((el) => ({
-          role: el.getAttribute('data-message-role') || '',
-          text: (el.innerText || '').replace(/^(User message:|Assistant message:)\s*/i, '').trim(),
-        }))
-        .filter((m) => m.text),
+        .map((el) => {
+          const text = (el.innerText || '').replace(/^(You:|User message:|Assistant message:)\s*/i, '').trim()
+          const media = [...new Set(
+            [...el.querySelectorAll('a[href], img[src], video[src], source[src]')]
+              .map((n) => n.href || n.currentSrc || n.src || (n.getAttribute && n.getAttribute('src')))
+              .filter((u) => u && /^https?:\/\//i.test(u)),
+          )]
+          return { role: el.getAttribute('data-message-role') || '', text, ...(media.length ? { media } : {}) }
+        })
+        .filter((m) => m.text || (m.media && m.media.length)),
     )
     return { messages: all.slice(-max), count: all.length, threadUrl: p.url() }
+  }
+
+  /** Extract media links (images/videos/attachments) from a chat's messages, optionally downloading. */
+  async chatMedia(chat, opts = {}) {
+    return this._serial(() => this._chatMedia(chat, opts))
+  }
+
+  async _chatMedia(chat, { download = false, dir } = {}) {
+    const p = await this.requirePage()
+    if (chat !== undefined && chat !== null && chat !== '') await this._openChat(chat)
+    else await this.gotoApp()
+    const items = await p.locator(SELECTORS.message).evaluateAll((els) =>
+      els
+        .map((el, index) => {
+          const role = el.getAttribute('data-message-role') || ''
+          const urls = [...new Set(
+            [...el.querySelectorAll('a[href], img[src], video[src], source[src]')]
+              .map((n) => n.href || n.currentSrc || n.src || (n.getAttribute && n.getAttribute('src')))
+              .filter((u) => u && /^https?:\/\//i.test(u)),
+          )]
+          const text = (el.innerText || '').replace(/^(You:|User message:|Assistant message:)\s*/i, '').replace(/\s+/g, ' ').trim()
+          return { index, role, text: text.slice(0, 120), urls }
+        })
+        .filter((m) => m.urls.length),
+    )
+    const all = [...new Set(items.flatMap((m) => m.urls))]
+    const result = { items, urls: all, count: all.length, threadUrl: p.url() }
+    if (download && all.length) result.downloads = await this._downloadMedia(all, dir)
+    return result
+  }
+
+  async downloadMedia(urls, dir) {
+    return this._serial(() => this._downloadMedia(urls, dir))
+  }
+
+  async _downloadMedia(urls, dir) {
+    const outDir = dir || path.join(__dirname, 'downloads')
+    fs.mkdirSync(outDir, { recursive: true })
+    const saved = []
+    for (const u of urls) {
+      try {
+        const res = await fetch(u)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const buf = Buffer.from(await res.arrayBuffer())
+        let name = 'media'
+        try { name = decodeURIComponent(new URL(u).pathname.split('/').pop() || 'media') } catch { /* keep */ }
+        if (!path.extname(name)) name += '.bin'
+        const dest = path.join(outDir, `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}-${name}`)
+        fs.writeFileSync(dest, buf)
+        saved.push({ url: u, file: dest, bytes: buf.length })
+      } catch (e) {
+        saved.push({ url: u, error: String((e && e.message) || e) })
+      }
+    }
+    return { dir: outDir, saved }
   }
 
   /** Diagnostic: dump transcript HTML so selectors can be re-verified. */

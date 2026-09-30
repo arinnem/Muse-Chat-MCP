@@ -24,6 +24,7 @@ Plus a tiny **CLI** (`muse-cli.mjs`) for one-shot generation from scripts.
 - **OpenAI-compatible HTTP shim** with **real streaming** (SSE), correct `finish_reason`, and `/v1` error objects.
 - **Prompt-injected tool calling** — expose OpenAI `tools` to Muse and get `tool_calls` back.
 - **Attachments** — send images/video with a prompt (MCP `files`, OpenAI `image_url` parts, CLI `-f`).
+- **Sessions & media** — list/open/read/send in any Muse chat, and pull out the images/videos Muse generates (links + download).
 - **Reuses your existing login** via a dedicated Chrome profile, or attaches to a Chrome you already run with `--remote-debugging-port=9222`.
 - **Never kills your browser**: when attached over CDP it only *disconnects* on close.
 - **Resilient**: if the profile is locked by a running Chrome, it auto-attaches over CDP instead of failing.
@@ -107,9 +108,10 @@ Add to `claude_desktop_config.json`:
 | `muse_new_chat` | – | navigates to the home composer |
 | `muse_chat` | `prompt`, `timeout_sec?`, `new_thread?`, `files?`, `chat?` | `{ reply, messages, threadUrl, elapsedMs, … }` |
 | `muse_read_last` | – | latest assistant message (no send) |
-| `muse_chats` | – | list chats (Main chat / Channels / Side chats) |
+| `muse_chats` | `query?` | list chats (Main chat / Channels / Side chats), optional title filter |
 | `muse_open_chat` | `target` | open a chat (title, index, URL, or id) |
-| `muse_read_chat` | `chat?`, `max?` | messages of a chat (all roles) |
+| `muse_read_chat` | `chat?`, `max?` | messages of a chat (all roles, with media links) |
+| `muse_media` | `chat?`, `download?`, `dir?` | image/video/attachment links from a chat (optionally downloaded) |
 | `muse_dump_dom` | `max_chars?` | element counts + transcript HTML (selector debugging) |
 | `muse_close` | – | closes the browser (disconnect-only if CDP-attached) |
 
@@ -137,7 +139,18 @@ List them, then target any one for reading or sending:
 - **CLI** — `--list-chats`, `--read [<chat>]`, `--chat <chat>`.
 
 > Muse can generate images/video **inside a chat** (it replies with share links) — use a
-> session read to retrieve those links.
+> session read or the media tools to retrieve them.
+
+### Media (generated images & video)
+
+When asked, Muse makes media and replies with a share link (`https://muse.ai/files/<…>/….mp4|.png`).
+Extract and download them:
+
+- **MCP** — `muse_media { chat?, download?, dir? }`.
+- **HTTP** — `GET /v1/muse/media?target=<chat>&download=1&dir=<dir>`.
+- **CLI** — `--media [<chat>] [--download] [--dir <dir>]`.
+
+Links are public (anyone with the link can view) but expire (~2 days) — download to keep them.
 
 ---
 
@@ -152,6 +165,7 @@ List them, then target any one for reading or sending:
 | `GET /health` | browser / login state |
 | `GET /v1/muse/chats` | list Muse chats |
 | `GET /v1/muse/chat?target=…` | read a chat (optionally opening it first) |
+| `GET /v1/muse/media?target=…` | media links in a chat (add `download=1` to save) |
 
 ```bash
 curl http://127.0.0.1:8787/v1/models
@@ -217,7 +231,7 @@ echo "<file>" | node muse-cli.mjs -s "Review this file"                # stdin p
 npm run muse -- "hello"                                                # via package.json
 ```
 
-Options: `-s/--system`, `-m/--model`, `-t/--timeout`, `-f/--file <path|url>` (repeatable), `--chat <name|index|url>`, `--list-chats`, `--read [<chat>]`, `--new-thread`, `--no-stream`, `--json`, `--base` (or env `MUSE_SHIM_URL`).
+Options: `-s/--system`, `-m/--model`, `-t/--timeout`, `-f/--file <path|url>` (repeatable), `--chat <name|index|url>`, `--list-chats`, `--query <text>`, `--read [<chat>]`, `--media [<chat>]`, `--download`, `--dir <dir>`, `--new-thread`, `--no-stream`, `--json`, `--base` (or env `MUSE_SHIM_URL`).
 
 ---
 

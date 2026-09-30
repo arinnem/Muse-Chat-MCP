@@ -318,7 +318,8 @@ export function startShim({ port = PORT, host = HOST } = {}) {
 
       // Session reading (Muse chats): list chats, or read one chat (optionally opening it first).
       if (req.method === 'GET' && url === '/v1/muse/chats') {
-        const data = await driver.listChats()
+        const params = new URL(req.url, 'http://localhost').searchParams
+        const data = await driver.listChats(params.get('query') || undefined)
         res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
         return res.end(JSON.stringify(data))
       }
@@ -328,6 +329,15 @@ export function startShim({ port = PORT, host = HOST } = {}) {
         const target = params.get('target')
         if (target) await driver.openChat(/^\d+$/.test(target) ? Number(target) : target)
         const data = await driver.readChat(Number(params.get('max')) || 100)
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
+        return res.end(JSON.stringify(data))
+      }
+
+      if (req.method === 'GET' && url === '/v1/muse/media') {
+        const params = new URL(req.url, 'http://localhost').searchParams
+        const target = params.get('target')
+        const download = params.get('download') === '1' || params.get('download') === 'true'
+        const data = await driver.chatMedia(target || undefined, { download, dir: params.get('dir') || undefined })
         res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
         return res.end(JSON.stringify(data))
       }

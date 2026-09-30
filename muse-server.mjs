@@ -106,10 +106,12 @@ export function buildServer() {
     'muse_chats',
     {
       title: 'List Muse chats',
-      description: 'List the chats in the Muse sidebar (Main chat, Channels, Side chats) with an active flag.',
-      inputSchema: {},
+      description: 'List the chats in the Muse sidebar (Main chat, Channels, Side chats) with an active flag. Optionally filter by title.',
+      inputSchema: {
+        query: z.string().optional().describe('Optional case-insensitive title filter.'),
+      },
     },
-    wrap(async () => driver.listChats()),
+    wrap(async ({ query }) => driver.listChats(query)),
   )
 
   server.registerTool(
@@ -138,6 +140,20 @@ export function buildServer() {
       if (chat !== undefined && chat !== null && chat !== '') await driver.openChat(chat)
       return driver.readChat(max || 100)
     }),
+  )
+
+  server.registerTool(
+    'muse_media',
+    {
+      title: 'Muse chat media',
+      description: 'Extract image/video/attachment links from a chat (Muse replies with share links for generated media). Optionally download them.',
+      inputSchema: {
+        chat: z.union([z.string(), z.number()]).optional().describe('Chat to open first (title, index, URL, or id).'),
+        download: z.boolean().optional().describe('Download the media to disk (default false).'),
+        dir: z.string().optional().describe('Directory for downloads (default: ./downloads next to the server).'),
+      },
+    },
+    wrap(async ({ chat, download, dir }) => driver.chatMedia(chat, { download: !!download, dir })),
   )
 
   server.registerTool(
