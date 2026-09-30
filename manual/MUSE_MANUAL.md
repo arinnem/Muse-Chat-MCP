@@ -209,3 +209,35 @@ Số liệu dưới đây là **đo trực tiếp** từ file Muse tạo ra (t�
 ```powershell
 ffprobe -v error -show_entries stream=codec_name,width,height,r_frame_rate,duration:format=size -of default=nw=1 "<file>"
 ```
+
+---
+
+## 11. Kết quả test UGC THẬT (founder-led) — 2026-09-30
+
+Test đầu tiên: **UGC có mặt founder (Lai Duc)** + **agent thêm hiệu ứng**. Chạy trong chat
+**"Set Lai Duc UGC rules"** (Muse đã có sẵn character + rules), gửi kèm **3 ảnh tham chiếu**.
+
+### 11.1 Ảnh UGC (từ 3 ảnh tham chiếu)
+- Kết quả: ảnh **1152×2048** (9:16), webp.
+- **Khớp "kiểu" rất tốt** (kính trong gọng lớn, tóc side-part, râu nhẹ, da tàn nhang, má đầy) — **nhưng là mặt mới sinh, KHÔNG khóa giống tuyệt đối** (trẻ/softer hơn, tóc hơi giữa).
+- ➜ Theo identity gate CaloTrack: **"vibe pass, exact fail"** → phải soi từng ảnh, hoặc dùng footage thật/face-composite nếu cần khớp chính xác.
+
+### 11.2 Video UGC (image→video)
+- **704×1248**, 24fps, **10.000s**, H.264+AAC, **~2.84 MB**.
+- **Mặt ổn định trong clip**, chuyển động tự nhiên (nháy mắt, quay đầu, mấp máy nói), camera tĩnh.
+- Chưa có voiceover (không yêu cầu ở test này).
+
+### 11.3 Agent hiệu ứng (hậu kỳ) — ✅ CHẠY ĐƯỢC
+Yêu cầu "zoom + logo + chữ" → Muse tự làm **hậu kỳ bằng ffmpeg**:
+- ✅ **Zoom chậm** đầu clip (cận mặt).
+- ✅ **Logo CaloTrack THẬT** (mình gửi kèm) composite **góc trên phải** — không phải AI vẽ.
+- ✅ **Chữ tiếng Việt ĐÚNG DẤU**: "Theo dõi bữa ăn ngay trong Zalo" ở cuối, nét trắng đọc rõ.
+- Xuất **704×1248, 10s, ~2.94 MB**.
+
+➜ **Đây là đường đi chuẩn:** Muse tạo clip → **hậu kỳ composite chữ/logo** (tránh AI vẽ chữ).
+
+### 11.4 Công thức video ~1 phút (6 clip)
+1 phút = **6 clip × 10s**. Vì có **cắt mềm ~1s** giữa các cảnh → mỗi clip **~9s nội dung** + ~1s transition.
+➜ **~54s nội dung + ~6s chuyển cảnh** trên timeline 60s; phần còn lại là **hiệu ứng hậu kỳ** (zoom, logo, chữ, màu, phụ đề).
+
+> Artifact test: `E:\AI\CaloTrack V1\marketing_export\muse_ugc_test\` (ảnh, video UGC, video hiệu ứng, frames).
