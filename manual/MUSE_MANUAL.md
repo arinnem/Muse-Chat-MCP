@@ -278,3 +278,16 @@ Sai lệch = FAIL, dù đẹp.
 (1152×2048, 24fps, 10s, 1.1MB; mặt = ref, KHÔNG đổi; chữ "TRACK BỮA ĂN" chuẩn).
 
 ➜ Vai trò Muse = **script + chữ + biên tập/hiệu ứng**; **mặt thật = lấy từ bạn** (ảnh/footage).
+
+---
+
+## 14. Mẹo chuẩn: đưa ẢNH THẬT → Muse giữ đúng mặt
+
+Khi gửi **ảnh THẬT** (approved ref) và yêu cầu làm video, Muse **tự dùng "ảnh thật + motion"** (KHÔNG sinh lại mặt) → **mặt đúng là mặt bạn** (QC1 PASS). Muse tự báo: *"vì dùng ảnh thật + motion nên không có diễn xuất..."*.
+
+- **Đánh đổi:** bối cảnh = ảnh gốc. Muốn bối cảnh khác → **cung cấp ảnh thật ở đúng bối cảnh**.
+- **Pipeline chuẩn:** ảnh thật (đúng bối cảnh) → motion (giữ mặt) → overlay chữ Việt + logo (hậu kỳ) → 20s (ghép 2 clip) → **3 QC**.
+- **Ví dụ đạt:** `muse_ugc_test/video10/VIDEO10_muse_720x1280_20s.mp4`
+  (720×1280, 24fps, 20s; mặt thật; overlay đúng dấu `INBODY` / `PBF • SMM • BMR` / `ĐỌC INBODY VỚI CALOTRACK`; logo góc trên-phải).
+
+➜ Tóm lại: **cho Muse ảnh thật đúng bối cảnh** ⇒ vừa giữ mặt, vừa ra video có chữ/logo chuẩn.
