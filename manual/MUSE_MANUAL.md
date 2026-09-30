@@ -257,3 +257,24 @@ Yêu cầu "zoom + logo + chữ" → Muse tự làm **hậu kỳ bằng ffmpeg**
 - Chạy QC kỹ thuật + trích khung: `node manual/qc-video.mjs <video> [outDir]`
 - Ví dụ đã ghi: run `muse-video01-tracking-one-button-2026-09-30` → **REJECTED_IDENTITY_FAIL**
   (Muse chỉ cho "vibe match", KHÔNG phải mặt thật Lai Đức → cần footage thật / face-composite mới PASS QC1).
+
+---
+
+## 13. Giữ đúng mặt founder (KHÔNG để AI sinh lại)
+
+**Vấn đề:** ảnh UGC tĩnh (có mặt bạn) thì OK, nhưng bước Muse **image→video SINH LẠI mặt** → video không còn là mặt bạn.
+
+**Cách đúng (giữ mặt 100%):** lấy ảnh/clip **CÓ mặt thật** làm gốc, rồi chỉ **thêm motion + chữ + logo**, KHÔNG regenerate:
+- **Ảnh tĩnh → video motion**: zoom/pan nhẹ (ffmpeg `zoompan`), giữ nguyên từng pixel mặt.
+  ```powershell
+  ffmpeg -loop 1 -i face.png -t 10 -r 24 -vf "scale=1280:2276,crop=1152:2048,zoompan=z='min(zoom+0.0005,1.06)':d=240:s=1152x2048:fps=24,drawtext=..." -c:v libx264 -pix_fmt yuv420p out.mp4
+  ```
+- **Footage thật** (`Personal Brading\Source quay`) → cắt/ghép + overlay.
+
+**QC1 phải đổi:** mặt phải **trùng khớp NGUỒN** (so với ảnh/clip gốc) — không chỉ "giống kiểu".
+Sai lệch = FAIL, dù đẹp.
+
+**Ví dụ đã chạy:** `muse_ugc_test/face_preserved/FACE_PRESERVED_motion_10s.mp4`
+(1152×2048, 24fps, 10s, 1.1MB; mặt = ref, KHÔNG đổi; chữ "TRACK BỮA ĂN" chuẩn).
+
+➜ Vai trò Muse = **script + chữ + biên tập/hiệu ứng**; **mặt thật = lấy từ bạn** (ảnh/footage).
