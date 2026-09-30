@@ -1,0 +1,174 @@
+#!/usr/bin/env node
+/**
+ * muse-server.mjs
+ * ------------------------------------------------------------------
+ * MCP (stdio) server exposing Meta Muse (muse.ai) as tools, by driving
+ * the real logged-in Chrome via playwright-core. See muse-driver.mjs for
+ * the protocol rationale (Muse chat = encrypted "noise" WebSocket).
+ *
+ * Tools:
+ *   muse_status    - browser / login / composer state
+ *   muse_login     - open muse.ai and wait for Meta sign-in to complete
+ *   muse_new_chat  - start a fresh thread
+ *   muse_chat      - send a prompt, wait for the reply, return text
+ *   muse_read_last - read the latest assistant message
+ *   muse_dump_dom  - diagnostics: transcript HTML + element counts
+ *   muse_close     - close the browser
+ *
+ * Config (env):
+ *   MUSE_PROFILE_DIR   dedicated Chrome profile (default: ./.muse-profile)
+ *   MUSE_URL           app URL (default https://muse.ai/)
+ *   MUSE_HEADLESS=1    run headless (login must be done beforehand)
+ *   MUSE_CHANNEL       chrome | msedge   (default chrome)
+ * ------------------------------------------------------------------
+ */
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
+import { z } from 'zod'
+import { driver } from './muse-driver.mjs'
+import { startShim } from './muse-openai-shim.mjs'
+
+const log = (...a) => console.error('[muse-mcp]', ...a)
+const asText = (obj) => ({ content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] })
+const wrap = (fn) => async (args) => {
+  try {
+    return asText(await fn(args || {}))
+  } catch (err) {
+    log('tool error:', err && err.message)
+    return { isError: true, content: [{ type: 'text', text: `Muse error: ${err && err.message ? err.message : String(err)}` }] }
+  }
+}
+
+export function buildServer() {
+  const server = new McpServer({ name: 'muse', version: '0.1.0' })
+
+  server.registerTool(
+    'muse_status',
+    {
+      title: 'Muse status',
+      description: 'Report whether the Muse browser is running, whether you are logged in to muse.ai, and whether the chat composer is ready.',
+      inputSchema: {},
+    },
+    wrap(async () => driver.status()),
+  )
+
+  server.registerTool(
+    'muse_login',
+    {
+      title: 'Muse login',
+      description: 'Open muse.ai in the dedicated Chrome window and wait for Meta sign-in to complete. Use when muse_status reports loggedIn=false.',
+      inputSchema: {
+        timeout_sec: z.number().int().positive().max(900).optional().describe('How long to wait for login (default 300).'),
+      },
+    },
+    wrap(async ({ timeout_sec }) => driver.login((timeout_sec || 300) * 1000)),
+  )
+
+  server.registerTool(
+    'muse_new_chat',
+    {
+      title: 'Muse new chat',
+      description: 'Start a fresh Muse thread (navigates to the home composer).',
+      inputSchema: {},
+    },
+    wrap(async () => driver.newChat()),
+  )
+
+  server.registerTool(
+    'muse_chat',
+    {
+      title: 'Chat with Muse',
+      description: 'Send a prompt to Muse and return the assistant reply once streaming finishes. Uses your own logged-in session and token quota.',
+      inputSchema: {
+        prompt: z.string().min(1).describe('The message to send.'),
+        timeout_sec: z.number().int().positive().max(1800).optional().describe('Max seconds to wait for the reply (default 240).'),
+        new_thread: z.boolean().optional().describe('Start a new thread before sending (default false = continue current thread).'),
+      },
+    },
+    wrap(async ({ prompt, timeout_sec, new_thread }) =>
+      driver.chat(prompt, { timeoutMs: (timeout_sec || 240) * 1000, newThread: !!new_thread }),
+    ),
+  )
+
+  server.registerTool(
+    'muse_read_last',
+    {
+      title: 'Read last Muse reply',
+      description: 'Return the most recent assistant message from the current thread without sending anything.',
+      inputSchema: {},
+    },
+    wrap(async () => driver.readLast()),
+  )
+
+  server.registerTool(
+    'muse_dump_dom',
+    {
+      title: 'Dump Muse DOM',
+      description: 'Diagnostics: element counts and transcript HTML. Use if selectors stop matching after a Muse update.',
+      inputSchema: {
+        max_chars: z.number().int().positive().max(200000).optional().describe('Truncate HTML to this many characters (default 20000).'),
+      },
+    },
+    wrap(async ({ max_chars }) => driver.dumpDom(max_chars || 20000)),
+  )
+
+  server.registerTool(
+    'muse_close',
+    {
+      title: 'Close Muse browser',
+      description: 'Close the dedicated Chrome window and release the profile.',
+      inputSchema: {},
+    },
+    wrap(async () => driver.close()),
+  )
+
+  return server
+}
+
+async function main() {
+  const args = process.argv.slice(2)
+
+  if (args.includes('--self-test')) {
+    await driver.launch()
+    const st = await driver.status()
+    log('self-test status:', JSON.stringify(st))
+    await driver.close()
+    process.exit(0)
+  }
+
+  if (args.includes('--dump-dom')) {
+    const d = await driver.dumpDom(4000)
+    console.error(JSON.stringify({ url: d.url, counts: d.counts, hasApproval: d.hasApproval }, null, 2))
+    await driver.close()
+    process.exit(0)
+  }
+
+  // Optional OpenAI-compatible HTTP shim, sharing this same driver/browser.
+  // Default port 8787; disable with MUSE_SHIM_PORT=0.
+  const shimPort = process.env.MUSE_SHIM_PORT === undefined ? 8787 : Number(process.env.MUSE_SHIM_PORT)
+  const startShimIfEnabled = () => { if (shimPort > 0) startShim({ port: shimPort }) }
+
+  if (args.includes('--serve-only')) {
+    startShimIfEnabled()
+    return // keep the process alive on the HTTP listener only
+  }
+
+  const server = buildServer()
+  const transport = new StdioServerTransport()
+  await server.connect(transport)
+  log('muse MCP server ready on stdio')
+  startShimIfEnabled()
+
+  const shutdown = async () => {
+    await driver.close().catch(() => {})
+    process.exit(0)
+  }
+  process.on('SIGINT', shutdown)
+  process.on('SIGTERM', shutdown)
+  process.stdin.on('close', shutdown)
+}
+
+main().catch((err) => {
+  log('fatal:', err)
+  process.exit(1)
+})
