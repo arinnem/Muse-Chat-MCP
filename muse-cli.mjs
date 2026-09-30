@@ -28,7 +28,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const SERVER = path.join(__dirname, 'muse-server.mjs')
 
 const argv = process.argv.slice(2)
-const opt = { model: 'muse-spark-1.3', timeout: 180000, stream: true, json: false, newThread: false, system: '' }
+const opt = { model: 'muse-spark-1.3', timeout: 180000, stream: true, json: false, newThread: false, system: '', files: [] }
 const positional = []
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i]
@@ -39,6 +39,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--new-thread') opt.newThread = true
   else if (a === '--no-stream') opt.stream = false
   else if (a === '--json') opt.json = true
+  else if (a === '-f' || a === '--file' || a === '--image') opt.files.push(argv[++i])
   else if (a === '--base') opt.base = argv[++i]
   else if (a === '--') positional.push(...argv.slice(i + 1)), (i = argv.length)
   else positional.push(a)
@@ -48,7 +49,8 @@ function printHelp() {
   process.stdout.write(
     'Usage: muse-cli [options] "prompt"\n' +
       '       echo "prompt" | muse-cli [options]\n\n' +
-      'Options: -s/--system, -m/--model, -t/--timeout, --new-thread, --no-stream, --json, --base\n',
+      'Options: -s/--system, -m/--model, -t/--timeout, --new-thread, --no-stream, --json, --base\n' +
+      '         -f/--file <path|url>   attach an image/video/file (repeatable)\n',
   )
 }
 
@@ -92,7 +94,7 @@ function cleanup() { if (child) { try { child.kill() } catch {} child = null } }
 async function main() {
   let prompt = positional.join(' ').trim()
   if (!prompt) prompt = (await readStdin()).trim()
-  if (!prompt) { printHelp(); process.exit(2) }
+  if (!prompt && !opt.files.length) { printHelp(); process.exit(2) }
 
   await ensureShim()
 
@@ -107,7 +109,7 @@ async function main() {
   const res = await fetch(BASE + '/chat/completions', {
     method: 'POST',
     headers,
-    body: JSON.stringify({ model: opt.model, messages, stream: opt.stream }),
+    body: JSON.stringify({ model: opt.model, messages, stream: opt.stream, files: opt.files.length ? opt.files : undefined }),
   })
 
   if (!opt.stream) {

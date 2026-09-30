@@ -80,13 +80,14 @@ export function buildServer() {
       title: 'Chat with Muse',
       description: 'Send a prompt to Muse and return the assistant reply once streaming finishes. Uses your own logged-in session and token quota.',
       inputSchema: {
-        prompt: z.string().min(1).describe('The message to send.'),
+        prompt: z.string().optional().describe('The message to send. May be empty when attaching files.'),
         timeout_sec: z.number().int().positive().max(1800).optional().describe('Max seconds to wait for the reply (default 240).'),
         new_thread: z.boolean().optional().describe('Start a new thread before sending (default false = continue current thread).'),
+        files: z.array(z.string()).optional().describe('Absolute paths or URLs of images/videos/files to attach to the message.'),
       },
     },
-    wrap(async ({ prompt, timeout_sec, new_thread }) =>
-      driver.chat(prompt, { timeoutMs: (timeout_sec || 240) * 1000, newThread: !!new_thread }),
+    wrap(async ({ prompt, timeout_sec, new_thread, files }) =>
+      driver.chat(prompt || '', { timeoutMs: (timeout_sec || 240) * 1000, newThread: !!new_thread, files }),
     ),
   )
 

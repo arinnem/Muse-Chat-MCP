@@ -23,6 +23,7 @@ Plus a tiny **CLI** (`muse-cli.mjs`) for one-shot generation from scripts.
 - **MCP tools** over stdio — drop-in for Claude Desktop / opencode / any MCP host.
 - **OpenAI-compatible HTTP shim** with **real streaming** (SSE), correct `finish_reason`, and `/v1` error objects.
 - **Prompt-injected tool calling** — expose OpenAI `tools` to Muse and get `tool_calls` back.
+- **Attachments** — send images/video with a prompt (MCP `files`, OpenAI `image_url` parts, CLI `-f`).
 - **Reuses your existing login** via a dedicated Chrome profile, or attaches to a Chrome you already run with `--remote-debugging-port=9222`.
 - **Never kills your browser**: when attached over CDP it only *disconnects* on close.
 - **Resilient**: if the profile is locked by a running Chrome, it auto-attaches over CDP instead of failing.
@@ -104,12 +105,24 @@ Add to `claude_desktop_config.json`:
 | `muse_status` | – | browser / login / composer state |
 | `muse_login` | `timeout_sec?` | waits for Meta sign-in to complete |
 | `muse_new_chat` | – | navigates to the home composer |
-| `muse_chat` | `prompt`, `timeout_sec?`, `new_thread?` | `{ reply, messages, threadUrl, elapsedMs, … }` |
+| `muse_chat` | `prompt`, `timeout_sec?`, `new_thread?`, `files?` | `{ reply, messages, threadUrl, elapsedMs, … }` |
 | `muse_read_last` | – | latest assistant message (no send) |
 | `muse_dump_dom` | `max_chars?` | element counts + transcript HTML (selector debugging) |
 | `muse_close` | – | closes the browser (disconnect-only if CDP-attached) |
 
 Typical flow: `muse_status` → (if needed `muse_login`) → `muse_chat { prompt }`.
+
+### Attachments (images & video)
+
+`muse_chat` accepts a `files` array — absolute paths or URLs — and attaches them to the
+message before sending:
+
+```jsonc
+{ "name": "muse_chat", "arguments": { "prompt": "What is in this image?", "files": ["C:\\path\\frame.jpg", "https://host/clip.mp4"] } }
+```
+
+Muse accepts images, video and documents (the composer's file input has **no** `accept`
+filter). Files are set directly on the hidden composer input — no OS file dialog.
 
 ---
 
@@ -165,6 +178,8 @@ for chunk in r:
 
 - **Real streaming** — DOM text is re-emitted as OpenAI deltas. Only text that is a *monotonic extension* and has been stable for `MUSE_STREAM_QUIET_MS` (default 600 ms) is emitted; the remainder is flushed at the end. Each stream ends with exactly one `finish_reason`, then `[DONE]`.
 - **Tools** — prompt-injected. Tool schemas are embedded with a *decision-only* rule ("do not execute"), so Muse returns `{"tool_calls":[{"name","arguments"}]}` instead of trying to actually run the action. Parsed into OpenAI `tool_calls` (`finish_reason: "tool_calls"`). Best-effort, not a native function-calling API.
+- **Attachments** — send images/video via OpenAI multimodal content (`{"type":"image_url","image_url":{"url":…}}`) or a top-level `files` array (local paths / URLs / data-URIs). Muse sees them like a normal chat attachment.
+- **Plain message** — the shim sends the latest user message **verbatim**: no `### USER/### ASSISTANT` role markers and no "continue the conversation" wrapper. Muse flags roleplay-style wrappers as prompt-injection and refuses them, so the bridge never adds any. Prior context comes from Muse's own thread.
 - **Headers** — `x-muse-thread: new` (navigate to `/` first), `x-muse-timeout-ms`.
 
 ---
@@ -176,11 +191,12 @@ for chunk in r:
 ```bash
 node muse-cli.mjs "Explain what a B-tree is in 2 sentences."          # streams to stdout
 node muse-cli.mjs --no-stream -s "Output ONLY raw code." "Write ..."   # exact final code
+node muse-cli.mjs -f ./frame.jpg "Write a Facebook caption for this image."  # attach image/video
 echo "<file>" | node muse-cli.mjs -s "Review this file"                # stdin prompt
 npm run muse -- "hello"                                                # via package.json
 ```
 
-Options: `-s/--system`, `-m/--model`, `-t/--timeout`, `--new-thread`, `--no-stream`, `--json`, `--base` (or env `MUSE_SHIM_URL`).
+Options: `-s/--system`, `-m/--model`, `-t/--timeout`, `-f/--file <path|url>` (repeatable), `--new-thread`, `--no-stream`, `--json`, `--base` (or env `MUSE_SHIM_URL`).
 
 ---
 
@@ -222,6 +238,7 @@ So the only robust options are (1) drive the real browser (this project) or (2) 
 | Composer root | `[data-hatch-composer-root]` |
 | Editor | `[data-hatch-composer-root] textarea` (fallback `[data-lexical-editor="true"]`) |
 | Send | `Enter` key |
+| Attach | `[data-hatch-composer-root] input[type="file"]` (hidden; `setInputFiles`) |
 | Streaming | `[data-testid="hatch-composer-stop-button"]` |
 | Messages | `[data-message-item]` with `data-message-role="user" \| "assistant"` |
 | Error | `[data-testid="assistant-response-error-notice"]` |

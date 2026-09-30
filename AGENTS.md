@@ -22,6 +22,9 @@ driving a real, logged-in Chrome with Playwright. See `README.md` for usage.
 - All browser work is serialized through `driver._serial`.
 - Streaming emits only **monotonic, stability-quieted** text; exactly one `finish_reason`.
 - Tool calling is **decision-only** (Muse must not actually execute the tool).
+- Prompts are sent **verbatim** — never add `### USER/### ASSISTANT` roleplay markers or a
+  "continue the conversation" wrapper; Muse flags those as prompt-injection and refuses.
+- Attachments go on the hidden composer `input[type="file"]` via `setInputFiles`.
 - **Never** commit secrets: no `.muse-profile/`, no `*.har`, no tokens.
 
 ## Verify changes

@@ -28,6 +28,7 @@ node muse-cli.mjs "Say hello in three words."
 - **Streaming stays correct.** Emit only monotonic, stability-quieted text (`STREAM_QUIET_MS`); a mid-message draft rewrite must not duplicate in the append-only SSE stream.
 - **Exactly one `finish_reason` chunk** per streamed completion.
 - **Tool calling is prompt-injected and decision-only** ("do not execute") — otherwise Muse tries to actually perform the action and hangs.
+- **Prompts go out verbatim.** Never wrap a message in `### USER/### ASSISTANT` roleplay markers or a "continue the conversation" wrapper — Muse detects that as prompt-injection and refuses. Attachments are set on the hidden composer `input[type="file"]`.
 - **No secrets in the repo, ever.** No Chrome profiles, no captures (`*.har`), no tokens.
 
 ## Verify

@@ -40,8 +40,6 @@ const rid = () => `chatcmpl-${Date.now().toString(36)}-${Math.random().toString(
 const now = () => Math.floor(Date.now() / 1000)
 const approxTokens = (s) => Math.max(1, Math.ceil((s || '').length / 4))
 
-const SHAPE_RULES = 'Continue the conversation by replying to the last user message.'
-
 // ---------------------------------------------------------------- prompt build
 
 function textOf(content) {
@@ -58,17 +56,19 @@ function textOf(content) {
 
 function buildPrompt(body) {
   const messages = Array.isArray(body.messages) ? body.messages : []
-  const system = messages.filter((m) => m.role === 'system').map((m) => textOf(m.content)).join('\n\n')
-  const parts = [SHAPE_RULES]
-  if (system) parts.push(`### SYSTEM\n${system}`)
+  const system = messages.filter((m) => m.role === 'system').map((m) => textOf(m.content)).filter(Boolean).join('\n\n')
 
-  for (const m of messages) {
-    if (m.role === 'system') continue
-    const t = textOf(m.content)
-    if (m.role === 'tool') parts.push(`### TOOL RESULT\n${t}`)
-    else if (m.role === 'assistant') parts.push(`### ASSISTANT\n${t || ''}`)
-    else if (m.role === 'user') parts.push(`### USER\n${t}`)
+  // Send the latest user (or tool-result) message as a plain message. Roleplay-style
+  // role markers ("### USER"/"### ASSISTANT") make Muse push back with "that's a fake
+  // transcript", and Muse already keeps its own conversation thread.
+  let userText = ''
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m.role === 'user' || m.role === 'tool') { userText = textOf(m.content); break }
   }
+
+  const parts = []
+  if (system) parts.push(system)
 
   const tools = Array.isArray(body.tools) ? body.tools : []
   if (tools.length && body.tool_choice !== 'none') {
@@ -79,21 +79,17 @@ function buildPrompt(body) {
     }))
     parts.push(
       [
-        '### TOOLS — DECISION ONLY, DO NOT EXECUTE',
-        'You are only DECIDING whether a tool call should be made. Do NOT perform the',
-        'action, do NOT browse, do NOT invent results, and do NOT run any capability.',
-        'Respond with EXACTLY ONE of the following, with no extra text:',
-        '- A tool call is needed -> output only this JSON (no code fences, no prose):',
-        '  {"tool_calls":[{"name":"<tool name>","arguments":{ ... }}]}',
-        '- No tool call is needed -> output only the normal plain-text reply.',
-        'Tool schemas:',
+        'If the request needs a tool, reply with ONLY this JSON and nothing else:',
+        '{"tool_calls":[{"name":"<tool name>","arguments":{ ... }}]}',
+        'You are only DECIDING whether a tool call should be made — do NOT perform the action,',
+        'do NOT browse, do NOT invent results. Otherwise reply normally. Tool schemas:',
         JSON.stringify(schemas),
       ].join('\n'),
     )
   }
 
-  parts.push('### ASSISTANT')
-  return parts.join('\n\n')
+  if (userText) parts.push(userText)
+  return parts.join('\n\n').trim()
 }
 
 function parseToolCalls(text) {
@@ -119,6 +115,35 @@ function parseToolCalls(text) {
       }
     })
     .filter(Boolean)
+}
+
+// Collect attachments from an OpenAI-style request:
+//   - body.files: ["C:\\img.png", "https://.../v.mp4", { url } | { path } | { buffer, name, mimeType }]
+//   - message.content parts: { type: "image_url", image_url: { url } } | { type: "input_image", image_url }
+//   - message.content parts: { type: "file", file: { file_url | file_data, filename, mime_type } }
+function collectFiles(body) {
+  const out = []
+  if (Array.isArray(body.files)) for (const f of body.files) if (f) out.push(f)
+  const messages = Array.isArray(body.messages) ? body.messages : []
+  for (const m of messages) {
+    if (!Array.isArray(m.content)) continue
+    for (const part of m.content) {
+      if (!part || typeof part === 'string') continue
+      const t = part.type
+      if ((t === 'image_url' || t === 'input_image') && part.image_url) {
+        out.push({ url: typeof part.image_url === 'string' ? part.image_url : part.image_url.url })
+      } else if (t === 'file' && part.file) {
+        const f = part.file
+        if (f.file_url) out.push({ url: f.file_url })
+        else if (f.file_data) {
+          const d = String(f.file_data)
+          if (/^data:/i.test(d)) out.push({ url: d })
+          else out.push({ buffer: d, name: f.filename || 'file', mimeType: f.mime_type || 'application/octet-stream' })
+        }
+      }
+    }
+  }
+  return out
 }
 
 // ---------------------------------------------------------------- responses
@@ -164,8 +189,9 @@ async function handleChat(req, res, body) {
   const prompt = buildPrompt(body)
   const wantTools = Array.isArray(body.tools) && body.tools.length > 0 && body.tool_choice !== 'none'
   const stream = body.stream === true
+  const files = collectFiles(body)
 
-  log(`chat model=${model} stream=${stream} tools=${wantTools} promptChars=${prompt.length}`)
+  log(`chat model=${model} stream=${stream} tools=${wantTools} files=${files.length} promptChars=${prompt.length}`)
 
   try {
     let finishReason = 'stop'
@@ -178,7 +204,7 @@ async function handleChat(req, res, body) {
 
       if (wantTools) {
         // Buffer so we can decide tool_calls vs content before emitting.
-        const r = await driver.chat(prompt, { timeoutMs, newThread })
+        const r = await driver.chat(prompt, { timeoutMs, newThread, files })
         if (r.error) throw new Error(r.error)
         const calls = parseToolCalls(r.reply)
         if (calls && calls.length) {
@@ -195,7 +221,7 @@ async function handleChat(req, res, body) {
       } else {
         let emitted = ''
         const r = await driver.chatStream(prompt, {
-          timeoutMs, newThread,
+          timeoutMs, newThread, files,
           onDelta: (full) => {
             const next = full.startsWith(emitted) ? full.slice(emitted.length) : full
             emitted = full
@@ -218,7 +244,7 @@ async function handleChat(req, res, body) {
     }
 
     // Non-streaming
-    const r = await driver.chat(prompt, { timeoutMs, newThread })
+    const r = await driver.chat(prompt, { timeoutMs, newThread, files })
     if (r.error && !r.reply) throw new Error(r.error)
     const calls = wantTools ? parseToolCalls(r.reply) : null
 

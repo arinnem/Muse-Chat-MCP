@@ -33,6 +33,8 @@ export const SELECTORS = {
   editor: '[data-lexical-editor="true"], [data-hatch-composer-root] textarea, [data-hatch-composer-prehydration-input], [data-hatch-composer-root] [contenteditable="true"]',
   stopButton: '[data-testid="hatch-composer-stop-button"]',
   actionSlot: '[data-hatch-composer-action-slot]',
+  fileInput: '[data-hatch-composer-root] input[type="file"]',
+  attachButton: '[data-hatch-composer-root] button[aria-label="Attach file"]',
   message: '[data-message-item]',
   assistant: '[data-message-item][data-message-role="assistant"]',
   user: '[data-message-item][data-message-role="user"]',
@@ -230,6 +232,63 @@ class MuseDriver {
     return this._serial(() => this._newChat())
   }
 
+  /**
+   * Normalize attachment entries into Playwright file payloads.
+   * Accepts: "C:\\path\\img.png" | { path } | { url } (http/https/data:) |
+   *          { name, mimeType, buffer } (Buffer or base64 string).
+   */
+  async _toFilePayloads(files) {
+    const out = []
+    for (const f of files || []) {
+      if (!f) continue
+      let e = f
+      if (typeof e === 'string') e = /^(https?:|data:)/i.test(e) ? { url: e } : { path: e }
+
+      if (e.buffer) {
+        const buf = Buffer.isBuffer(e.buffer) ? e.buffer : Buffer.from(e.buffer, 'base64')
+        out.push({ name: e.name || 'file', mimeType: e.mimeType || 'application/octet-stream', buffer: buf })
+        continue
+      }
+      if (e.url && /^data:/i.test(e.url)) {
+        const m = e.url.match(/^data:([^;,]*)(;base64)?,(.*)$/s)
+        if (m) {
+          const buf = Buffer.from(m[3], m[2] ? 'base64' : 'utf8')
+          out.push({ name: e.name || `attachment`, mimeType: m[1] || e.mimeType || 'application/octet-stream', buffer: buf })
+          continue
+        }
+      }
+      if (e.url && /^file:\/\//i.test(e.url)) { out.push(fileURLToPath(e.url)); continue }
+      if (e.url && /^https?:\/\//i.test(e.url)) {
+        const res = await fetch(e.url)
+        if (!res.ok) throw new Error(`failed to fetch attachment ${e.url}: ${res.status}`)
+        const buf = Buffer.from(await res.arrayBuffer())
+        let name = e.name
+        if (!name) { try { name = decodeURIComponent(new URL(e.url).pathname.split('/').pop()) || 'attachment' } catch { name = 'attachment' } }
+        out.push({ name, mimeType: res.headers.get('content-type') || e.mimeType || 'application/octet-stream', buffer: buf })
+        continue
+      }
+      if (e.url) { out.push(e.url); continue } // bare local path passed via `url`
+      if (e.path) out.push(e.path)
+    }
+    return out
+  }
+
+  /** Attach files/images/videos to the composer (no send). */
+  async attachFiles(files) {
+    return this._serial(() => this._attachFiles(files))
+  }
+
+  async _attachFiles(files) {
+    const payloads = await this._toFilePayloads(files)
+    if (!payloads.length) return { ok: true, count: 0 }
+    const p = await this.requirePage()
+    await this.gotoApp()
+    await this.waitForComposer()
+    await p.locator(SELECTORS.fileInput).first().setInputFiles(payloads)
+    await sleep(600) // let the app register the attachment(s)
+    return { ok: true, count: payloads.length }
+  }
+
   async waitForComposer(timeoutMs = 90000) {
     const p = await this.requirePage()
     await p.locator(SELECTORS.editor).first().waitFor({ state: 'visible', timeout: timeoutMs })
@@ -264,8 +323,9 @@ class MuseDriver {
    * Send a prompt and wait for the assistant reply to finish streaming.
    * @returns {Promise<{reply:string, messages:string[], threadUrl:string, elapsedMs:number, error?:string, timedOut?:boolean, needsApproval?:boolean}>}
    */
-  async _run(prompt, { timeoutMs = 240000, newThread = false, onDelta } = {}) {
-    if (!prompt || !prompt.trim()) throw new Error('prompt is empty')
+  async _run(prompt, { timeoutMs = 240000, newThread = false, onDelta, files } = {}) {
+    const hasFiles = Array.isArray(files) && files.length > 0
+    if ((!prompt || !prompt.trim()) && !hasFiles) throw new Error('prompt is empty')
     const p = await this.requirePage()
     if (newThread) await this._newChat()
     await this.gotoApp()
@@ -273,6 +333,15 @@ class MuseDriver {
 
     // Clear any transient error notice.
     this.lastError = null
+
+    // Attach images/videos/files (if any) before typing the prompt.
+    if (hasFiles) {
+      const payloads = await this._toFilePayloads(files)
+      if (payloads.length) {
+        await p.locator(SELECTORS.fileInput).first().setInputFiles(payloads)
+        await sleep(800) // let the app ingest + preview the attachment(s)
+      }
+    }
 
     const before = await p.locator(SELECTORS.assistant).count()
 
@@ -282,9 +351,9 @@ class MuseDriver {
     await editor.click()
     await p.keyboard.press('Control+A').catch(() => {})
     await p.keyboard.press('Delete').catch(() => {})
-    try { await p.keyboard.insertText(prompt) } catch { /* fall back below */ }
+    try { if (prompt) await p.keyboard.insertText(prompt) } catch { /* fall back below */ }
     await sleep(120)
-    if (!(await this.composerText()).trim()) {
+    if (prompt && !(await this.composerText()).trim()) {
       await p.keyboard.type(prompt, { delay: 1 })
     }
     await sleep(150)
