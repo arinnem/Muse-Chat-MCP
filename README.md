@@ -105,8 +105,11 @@ Add to `claude_desktop_config.json`:
 | `muse_status` | – | browser / login / composer state |
 | `muse_login` | `timeout_sec?` | waits for Meta sign-in to complete |
 | `muse_new_chat` | – | navigates to the home composer |
-| `muse_chat` | `prompt`, `timeout_sec?`, `new_thread?`, `files?` | `{ reply, messages, threadUrl, elapsedMs, … }` |
+| `muse_chat` | `prompt`, `timeout_sec?`, `new_thread?`, `files?`, `chat?` | `{ reply, messages, threadUrl, elapsedMs, … }` |
 | `muse_read_last` | – | latest assistant message (no send) |
+| `muse_chats` | – | list chats (Main chat / Channels / Side chats) |
+| `muse_open_chat` | `target` | open a chat (title, index, URL, or id) |
+| `muse_read_chat` | `chat?`, `max?` | messages of a chat (all roles) |
 | `muse_dump_dom` | `max_chars?` | element counts + transcript HTML (selector debugging) |
 | `muse_close` | – | closes the browser (disconnect-only if CDP-attached) |
 
@@ -124,6 +127,18 @@ message before sending:
 Muse accepts images, video and documents (the composer's file input has **no** `accept`
 filter). Files are set directly on the hidden composer input — no OS file dialog.
 
+### Sessions (multiple chats)
+
+Muse has a **Main chat** plus **Channels** and **Side chats** (each a `muse.ai/thread/<id>`).
+List them, then target any one for reading or sending:
+
+- **MCP** — `muse_chats`, `muse_open_chat { target }`, `muse_read_chat { chat?, max? }`, and `muse_chat { …, chat }` where the target is a title, index, thread URL, or thread id.
+- **HTTP** — `GET /v1/muse/chats` (list) and `GET /v1/muse/chat?target=<name|index|url>&max=100` (read); send with header `x-muse-chat: <name|index|url>` (or body `chat`).
+- **CLI** — `--list-chats`, `--read [<chat>]`, `--chat <chat>`.
+
+> Muse can generate images/video **inside a chat** (it replies with share links) — use a
+> session read to retrieve those links.
+
 ---
 
 ## Use the OpenAI-compatible shim
@@ -135,6 +150,8 @@ filter). Files are set directly on the hidden composer input — no OS file dial
 | `GET /v1/models` | model list |
 | `POST /v1/chat/completions` | chat completions (stream + non-stream, tools) |
 | `GET /health` | browser / login state |
+| `GET /v1/muse/chats` | list Muse chats |
+| `GET /v1/muse/chat?target=…` | read a chat (optionally opening it first) |
 
 ```bash
 curl http://127.0.0.1:8787/v1/models
@@ -180,6 +197,7 @@ for chunk in r:
 - **Tools** — prompt-injected. Tool schemas are embedded with a *decision-only* rule ("do not execute"), so Muse returns `{"tool_calls":[{"name","arguments"}]}` instead of trying to actually run the action. Parsed into OpenAI `tool_calls` (`finish_reason: "tool_calls"`). Best-effort, not a native function-calling API.
 - **Attachments** — send images/video via OpenAI multimodal content (`{"type":"image_url","image_url":{"url":…}}`) or a top-level `files` array (local paths / URLs / data-URIs). Muse sees them like a normal chat attachment.
 - **Plain message** — the shim sends the latest user message **verbatim**: no `### USER/### ASSISTANT` role markers and no "continue the conversation" wrapper. Muse flags roleplay-style wrappers as prompt-injection and refuses them, so the bridge never adds any. Prior context comes from Muse's own thread.
+- **Sessions** — target a chat with header `x-muse-chat: <title|index|url>` (or body `chat`); read chats via `GET /v1/muse/chats` and `GET /v1/muse/chat`.
 - **Headers** — `x-muse-thread: new` (navigate to `/` first), `x-muse-timeout-ms`.
 
 ---
@@ -192,11 +210,14 @@ for chunk in r:
 node muse-cli.mjs "Explain what a B-tree is in 2 sentences."          # streams to stdout
 node muse-cli.mjs --no-stream -s "Output ONLY raw code." "Write ..."   # exact final code
 node muse-cli.mjs -f ./frame.jpg "Write a Facebook caption for this image."  # attach image/video
+node muse-cli.mjs --list-chats                                        # list Muse chats
+node muse-cli.mjs --read "Video creation capability"                  # read a chat
+node muse-cli.mjs --chat "Reply with pong" "hi"                       # send into a chat
 echo "<file>" | node muse-cli.mjs -s "Review this file"                # stdin prompt
 npm run muse -- "hello"                                                # via package.json
 ```
 
-Options: `-s/--system`, `-m/--model`, `-t/--timeout`, `-f/--file <path|url>` (repeatable), `--new-thread`, `--no-stream`, `--json`, `--base` (or env `MUSE_SHIM_URL`).
+Options: `-s/--system`, `-m/--model`, `-t/--timeout`, `-f/--file <path|url>` (repeatable), `--chat <name|index|url>`, `--list-chats`, `--read [<chat>]`, `--new-thread`, `--no-stream`, `--json`, `--base` (or env `MUSE_SHIM_URL`).
 
 ---
 
@@ -239,6 +260,7 @@ So the only robust options are (1) drive the real browser (this project) or (2) 
 | Editor | `[data-hatch-composer-root] textarea` (fallback `[data-lexical-editor="true"]`) |
 | Send | `Enter` key |
 | Attach | `[data-hatch-composer-root] input[type="file"]` (hidden; `setInputFiles`) |
+| Chat list | `[data-testid="hatch-thread-row"]` |
 | Streaming | `[data-testid="hatch-composer-stop-button"]` |
 | Messages | `[data-message-item]` with `data-message-role="user" \| "assistant"` |
 | Error | `[data-testid="assistant-response-error-notice"]` |

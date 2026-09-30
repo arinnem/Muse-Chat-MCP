@@ -28,7 +28,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const SERVER = path.join(__dirname, 'muse-server.mjs')
 
 const argv = process.argv.slice(2)
-const opt = { model: 'muse-spark-1.3', timeout: 180000, stream: true, json: false, newThread: false, system: '', files: [] }
+const opt = { model: 'muse-spark-1.3', timeout: 180000, stream: true, json: false, newThread: false, system: '', files: [], chat: undefined, listChats: false, read: undefined }
 const positional = []
 for (let i = 0; i < argv.length; i++) {
   const a = argv[i]
@@ -40,6 +40,9 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === '--no-stream') opt.stream = false
   else if (a === '--json') opt.json = true
   else if (a === '-f' || a === '--file' || a === '--image') opt.files.push(argv[++i])
+  else if (a === '--chat') opt.chat = argv[++i]
+  else if (a === '--list-chats') opt.listChats = true
+  else if (a === '--read') { const nxt = argv[i + 1]; if (nxt && !nxt.startsWith('-')) { opt.read = nxt; i++ } else opt.read = '' }
   else if (a === '--base') opt.base = argv[++i]
   else if (a === '--') positional.push(...argv.slice(i + 1)), (i = argv.length)
   else positional.push(a)
@@ -50,7 +53,10 @@ function printHelp() {
     'Usage: muse-cli [options] "prompt"\n' +
       '       echo "prompt" | muse-cli [options]\n\n' +
       'Options: -s/--system, -m/--model, -t/--timeout, --new-thread, --no-stream, --json, --base\n' +
-      '         -f/--file <path|url>   attach an image/video/file (repeatable)\n',
+      '         -f/--file <path|url>   attach an image/video/file (repeatable)\n' +
+      '         --chat <name|index|url>  send to a specific Muse chat (default: main chat)\n' +
+      '         --list-chats           list Muse chats and exit\n' +
+      '         --read [<name|index|url>]  read a chat (current chat if omitted) and exit\n',
   )
 }
 
@@ -92,6 +98,22 @@ async function ensureShim() {
 function cleanup() { if (child) { try { child.kill() } catch {} child = null } }
 
 async function main() {
+  // Session reading modes (no prompt).
+  if (opt.listChats || opt.read !== undefined) {
+    await ensureShim()
+    if (opt.listChats) {
+      const d = await (await fetch(BASE + '/muse/chats')).json()
+      for (let i = 0; i < (d.chats || []).length; i++) process.stdout.write(`${i}\t${d.chats[i].active ? '*' : ' '}\t${d.chats[i].title}\n`)
+    }
+    if (opt.read !== undefined) {
+      const u = BASE + '/muse/chat' + (opt.read ? '?target=' + encodeURIComponent(opt.read) : '')
+      const d = await (await fetch(u)).json()
+      if (opt.json) process.stdout.write(JSON.stringify(d, null, 2) + '\n')
+      else for (const m of d.messages || []) process.stdout.write(`[${m.role}] ${m.text}\n`)
+    }
+    return
+  }
+
   let prompt = positional.join(' ').trim()
   if (!prompt) prompt = (await readStdin()).trim()
   if (!prompt && !opt.files.length) { printHelp(); process.exit(2) }
@@ -109,7 +131,7 @@ async function main() {
   const res = await fetch(BASE + '/chat/completions', {
     method: 'POST',
     headers,
-    body: JSON.stringify({ model: opt.model, messages, stream: opt.stream, files: opt.files.length ? opt.files : undefined }),
+    body: JSON.stringify({ model: opt.model, messages, stream: opt.stream, files: opt.files.length ? opt.files : undefined, chat: opt.chat !== undefined ? opt.chat : undefined }),
   })
 
   if (!opt.stream) {

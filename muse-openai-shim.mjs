@@ -190,8 +190,14 @@ async function handleChat(req, res, body) {
   const wantTools = Array.isArray(body.tools) && body.tools.length > 0 && body.tool_choice !== 'none'
   const stream = body.stream === true
   const files = collectFiles(body)
+  let chat = req.headers['x-muse-chat'] !== undefined ? req.headers['x-muse-chat'] : body.chat
+  if (typeof chat === 'string') {
+    const s = chat.trim()
+    if (!s) chat = undefined
+    else if (/^\d+$/.test(s)) chat = Number(s)
+  }
 
-  log(`chat model=${model} stream=${stream} tools=${wantTools} files=${files.length} promptChars=${prompt.length}`)
+  log(`chat model=${model} stream=${stream} tools=${wantTools} files=${files.length} target=${chat !== undefined ? chat : 'current'} promptChars=${prompt.length}`)
 
   try {
     let finishReason = 'stop'
@@ -204,7 +210,7 @@ async function handleChat(req, res, body) {
 
       if (wantTools) {
         // Buffer so we can decide tool_calls vs content before emitting.
-        const r = await driver.chat(prompt, { timeoutMs, newThread, files })
+        const r = await driver.chat(prompt, { timeoutMs, newThread, files, chat })
         if (r.error) throw new Error(r.error)
         const calls = parseToolCalls(r.reply)
         if (calls && calls.length) {
@@ -221,7 +227,7 @@ async function handleChat(req, res, body) {
       } else {
         let emitted = ''
         const r = await driver.chatStream(prompt, {
-          timeoutMs, newThread, files,
+          timeoutMs, newThread, files, chat,
           onDelta: (full) => {
             const next = full.startsWith(emitted) ? full.slice(emitted.length) : full
             emitted = full
@@ -244,7 +250,7 @@ async function handleChat(req, res, body) {
     }
 
     // Non-streaming
-    const r = await driver.chat(prompt, { timeoutMs, newThread, files })
+    const r = await driver.chat(prompt, { timeoutMs, newThread, files, chat })
     if (r.error && !r.reply) throw new Error(r.error)
     const calls = wantTools ? parseToolCalls(r.reply) : null
 
@@ -308,6 +314,22 @@ export function startShim({ port = PORT, host = HOST } = {}) {
           object: 'list',
           data: MODEL_IDS.map((m) => ({ id: m, object: 'model', created: 0, owned_by: 'muse' })),
         }))
+      }
+
+      // Session reading (Muse chats): list chats, or read one chat (optionally opening it first).
+      if (req.method === 'GET' && url === '/v1/muse/chats') {
+        const data = await driver.listChats()
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
+        return res.end(JSON.stringify(data))
+      }
+
+      if (req.method === 'GET' && url === '/v1/muse/chat') {
+        const params = new URL(req.url, 'http://localhost').searchParams
+        const target = params.get('target')
+        if (target) await driver.openChat(/^\d+$/.test(target) ? Number(target) : target)
+        const data = await driver.readChat(Number(params.get('max')) || 100)
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
+        return res.end(JSON.stringify(data))
       }
 
       if (req.method === 'POST' && url === '/v1/chat/completions') {

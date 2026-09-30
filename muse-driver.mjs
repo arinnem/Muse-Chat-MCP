@@ -36,6 +36,7 @@ export const SELECTORS = {
   fileInput: '[data-hatch-composer-root] input[type="file"]',
   attachButton: '[data-hatch-composer-root] button[aria-label="Attach file"]',
   message: '[data-message-item]',
+  threadRow: '[data-testid="hatch-thread-row"]',
   assistant: '[data-message-item][data-message-role="assistant"]',
   user: '[data-message-item][data-message-role="user"]',
   errorNotice: '[data-testid="assistant-response-error-notice"]',
@@ -323,12 +324,13 @@ class MuseDriver {
    * Send a prompt and wait for the assistant reply to finish streaming.
    * @returns {Promise<{reply:string, messages:string[], threadUrl:string, elapsedMs:number, error?:string, timedOut?:boolean, needsApproval?:boolean}>}
    */
-  async _run(prompt, { timeoutMs = 240000, newThread = false, onDelta, files } = {}) {
+  async _run(prompt, { timeoutMs = 240000, newThread = false, onDelta, files, chat } = {}) {
     const hasFiles = Array.isArray(files) && files.length > 0
     if ((!prompt || !prompt.trim()) && !hasFiles) throw new Error('prompt is empty')
     const p = await this.requirePage()
     if (newThread) await this._newChat()
-    await this.gotoApp()
+    else if (chat !== undefined && chat !== null && chat !== '') await this._openChat(chat)
+    else await this.gotoApp()
     await this.waitForComposer()
 
     // Clear any transient error notice.
@@ -455,6 +457,80 @@ class MuseDriver {
     if (!n) return { reply: '', messages: [], threadUrl: p.url() }
     const reply = await p.locator(SELECTORS.assistant).last().innerText().catch(() => '')
     return { reply: reply.trim(), messages: [reply.trim()], threadUrl: p.url() }
+  }
+
+  /** List the chats shown in the Muse sidebar (Main chat, Channels, Side chats). */
+  async listChats() {
+    return this._serial(() => this._listChats())
+  }
+
+  async _listChats() {
+    const p = await this.requirePage()
+    await this.gotoApp()
+    await sleep(400)
+    const chats = await p.locator(SELECTORS.threadRow).evaluateAll((els) =>
+      els.map((el) => ({
+        title: (el.innerText || '').replace(/\s+/g, ' ').replace(/\s*More thread actions\s*$/i, '').trim(),
+        active: el.getAttribute('aria-current') === 'page' || el.getAttribute('aria-selected') === 'true',
+      })).filter((c) => c.title),
+    )
+    return { chats, threadUrl: p.url() }
+  }
+
+  /**
+   * Open a chat. `target` can be:
+   *   - a number         -> chat index from listChats()
+   *   - a title/name     -> matched (substring, case-insensitive) against the sidebar
+   *   - a thread URL or bare thread id (uuid) -> navigated to directly
+   *   - null/undefined   -> the home / main chat
+   */
+  async openChat(target) {
+    return this._serial(() => this._openChat(target))
+  }
+
+  async _openChat(target) {
+    const p = await this.requirePage()
+    if (target === null || target === undefined || target === '') {
+      await this.gotoApp()
+    } else if (typeof target === 'number') {
+      await this.gotoApp()
+      const row = p.locator(SELECTORS.threadRow).nth(target)
+      if (!(await row.count())) throw new Error(`chat index ${target} out of range`)
+      await row.click()
+    } else {
+      const s = String(target).trim()
+      if (/^https?:\/\//i.test(s)) {
+        await p.goto(s, { waitUntil: 'domcontentloaded', timeout: LAUNCH_TIMEOUT })
+      } else if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)) {
+        await p.goto(`https://muse.ai/thread/${s}`, { waitUntil: 'domcontentloaded', timeout: LAUNCH_TIMEOUT })
+      } else {
+        await this.gotoApp()
+        const row = p.locator(SELECTORS.threadRow, { hasText: s }).first()
+        if (!(await row.count())) throw new Error(`no chat matching "${s}"`)
+        await row.click()
+      }
+    }
+    await sleep(1200)
+    await this.waitForComposer()
+    return { ok: true, url: p.url() }
+  }
+
+  /** Read messages of the currently open chat. */
+  async readChat(max = 100) {
+    return this._serial(() => this._readChat(max))
+  }
+
+  async _readChat(max = 100) {
+    const p = await this.requirePage()
+    const all = await p.locator(SELECTORS.message).evaluateAll((els) =>
+      els
+        .map((el) => ({
+          role: el.getAttribute('data-message-role') || '',
+          text: (el.innerText || '').replace(/^(User message:|Assistant message:)\s*/i, '').trim(),
+        }))
+        .filter((m) => m.text),
+    )
+    return { messages: all.slice(-max), count: all.length, threadUrl: p.url() }
   }
 
   /** Diagnostic: dump transcript HTML so selectors can be re-verified. */

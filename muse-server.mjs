@@ -84,10 +84,11 @@ export function buildServer() {
         timeout_sec: z.number().int().positive().max(1800).optional().describe('Max seconds to wait for the reply (default 240).'),
         new_thread: z.boolean().optional().describe('Start a new thread before sending (default false = continue current thread).'),
         files: z.array(z.string()).optional().describe('Absolute paths or URLs of images/videos/files to attach to the message.'),
+        chat: z.union([z.string(), z.number()]).optional().describe('Target chat by title, index, thread URL, or thread id (default: main chat).'),
       },
     },
-    wrap(async ({ prompt, timeout_sec, new_thread, files }) =>
-      driver.chat(prompt || '', { timeoutMs: (timeout_sec || 240) * 1000, newThread: !!new_thread, files }),
+    wrap(async ({ prompt, timeout_sec, new_thread, files, chat }) =>
+      driver.chat(prompt || '', { timeoutMs: (timeout_sec || 240) * 1000, newThread: !!new_thread, files, chat }),
     ),
   )
 
@@ -99,6 +100,44 @@ export function buildServer() {
       inputSchema: {},
     },
     wrap(async () => driver.readLast()),
+  )
+
+  server.registerTool(
+    'muse_chats',
+    {
+      title: 'List Muse chats',
+      description: 'List the chats in the Muse sidebar (Main chat, Channels, Side chats) with an active flag.',
+      inputSchema: {},
+    },
+    wrap(async () => driver.listChats()),
+  )
+
+  server.registerTool(
+    'muse_open_chat',
+    {
+      title: 'Open Muse chat',
+      description: 'Open a specific Muse chat so later reads/sends target it (instead of the main chat).',
+      inputSchema: {
+        target: z.union([z.string(), z.number()]).describe('Chat title (substring), index from muse_chats, a thread URL, or a thread id.'),
+      },
+    },
+    wrap(async ({ target }) => driver.openChat(target)),
+  )
+
+  server.registerTool(
+    'muse_read_chat',
+    {
+      title: 'Read Muse chat',
+      description: 'Return the messages of a chat (all roles) without sending anything. Optionally open a chat first.',
+      inputSchema: {
+        chat: z.union([z.string(), z.number()]).optional().describe('Optional chat to open first (title, index, URL, or id).'),
+        max: z.number().int().positive().max(500).optional().describe('Max messages to return from the end (default 100).'),
+      },
+    },
+    wrap(async ({ chat, max }) => {
+      if (chat !== undefined && chat !== null && chat !== '') await driver.openChat(chat)
+      return driver.readChat(max || 100)
+    }),
   )
 
   server.registerTool(
