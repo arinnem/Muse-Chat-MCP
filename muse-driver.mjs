@@ -81,13 +81,13 @@ class MuseDriver {
     if (this.isRunning()) return this.page
     const { chromium } = await import('playwright-core')
 
-    const launchPersistent = () =>
+    const launchPersistent = (ignoreAutomation = false) =>
       chromium.launchPersistentContext(PROFILE_DIR, {
         channel: CHANNEL,
         headless: HEADLESS,
         viewport: { width: 1366, height: 900 },
         acceptDownloads: false,
-        ignoreDefaultArgs: ['--enable-automation'],
+        ...(ignoreAutomation ? { ignoreDefaultArgs: ['--enable-automation'] } : {}),
         args: [
           '--no-first-run',
           '--no-default-browser-check',
@@ -109,11 +109,11 @@ class MuseDriver {
       } catch (e) {
         this.browser = null
         this.ctx = null
-        this.ctx = await launchPersistent()
+        this.ctx = await launchPersistent(false)
       }
     } else {
       try {
-        this.ctx = await launchPersistent()
+        this.ctx = await launchPersistent(process.env.MUSE_HIDE_AUTOMATION === '1')
       } catch (e) {
         // The profile is probably locked by an already-running Chrome (e.g. one
         // started with --remote-debugging-port=9222). Attach to it instead of
@@ -121,14 +121,18 @@ class MuseDriver {
         const msg = String((e && e.message) || e)
         if (!/singleton|lock|profile|already running|browser is already/i.test(msg)) throw e
         try {
-          await attachCDP('http://127.0.0.1:9222')
+          this.ctx = await launchPersistent(false)
         } catch {
-          throw new Error(
-            `Could not open the Muse Chrome profile (${PROFILE_DIR}): it is locked by ` +
-              `another Chrome window, and no debugger is listening on 127.0.0.1:9222. ` +
-              `Close the Chrome window using this profile, or restart it with ` +
-              `--remote-debugging-port=9222 and set MUSE_CDP=http://127.0.0.1:9222.`,
-          )
+          try {
+            await attachCDP('http://127.0.0.1:9222')
+          } catch {
+            throw new Error(
+              `Could not open the Muse Chrome profile (${PROFILE_DIR}): it is locked by ` +
+                `another Chrome window, and no debugger is listening on 127.0.0.1:9222. ` +
+                `Close the Chrome window using this profile, or restart it with ` +
+                `--remote-debugging-port=9222 and set MUSE_CDP=http://127.0.0.1:9222.`,
+            )
+          }
         }
       }
     }
