@@ -7,11 +7,12 @@ package-lock.json
 *.muse-profile/
 .test-profile*/
 
-# captures / secrets — never commit
+# captures / secrets / media — never commit
 *.har
 .env
 .env.*
 *.log
+downloads/
 
 # os / editor
 .DS_Store
