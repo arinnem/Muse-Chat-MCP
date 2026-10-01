@@ -57,7 +57,7 @@ const STREAM_QUIET_MS = Number(process.env.MUSE_STREAM_QUIET_MS || 600)
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-class MuseDriver {
+export class MuseDriver {
   constructor() {
     this.ctx = null
     this.page = null
@@ -186,10 +186,10 @@ class MuseDriver {
     }
   }
 
-  async hasComposer() {
+  async hasComposer(timeout = 8000) {
     const p = await this.requirePage()
     try {
-      await p.locator(SELECTORS.editor).first().waitFor({ state: 'visible', timeout: 8000 })
+      await p.locator(SELECTORS.editor).first().waitFor({ state: 'visible', timeout })
       return true
     } catch {
       return false
@@ -203,7 +203,7 @@ class MuseDriver {
       return { browserRunning: false, url: null, loggedIn: false, composerReady: false, profileDir: PROFILE_DIR, headless: HEADLESS }
     }
     const auth = await this.checkAuth()
-    const composerReady = await this.hasComposer()
+    const composerReady = await this.hasComposer(500)
     return {
       browserRunning: true,
       url,

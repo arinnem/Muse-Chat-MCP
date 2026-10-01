@@ -182,12 +182,12 @@ async function runTests() {
     const session = await tm.ensureValidSession()
     const after = Date.now()
 
-    // Verify lifecycle execution order
+    // Verify lifecycle execution order: session -> wake -> token
     assert.equal(calls.length, 3)
-    assert.equal(calls[0].pathname, '/api/hatch/vm/wake')
-    assert.equal(calls[0].method, 'POST')
-    assert.equal(calls[1].pathname, '/api/session')
-    assert.equal(calls[1].method, 'GET')
+    assert.equal(calls[0].pathname, '/api/session')
+    assert.equal(calls[0].method, 'GET')
+    assert.equal(calls[1].pathname, '/api/hatch/vm/wake')
+    assert.equal(calls[1].method, 'POST')
     assert.equal(calls[2].pathname, '/api/hatch/token')
     assert.equal(calls[2].method, 'POST')
 
@@ -496,6 +496,250 @@ async function runTests() {
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true })
     }
+  })
+
+  // ----------------------------------------------------------------
+  // Test 11: Browser-backed session resolution via mock driver
+  // ----------------------------------------------------------------
+  await test('Browser-backed session resolution via mock driver and cookie sync', async () => {
+    const mockCalls = []
+    const tempDir = path.join(__dirname, '.temp-browser-driver-' + Date.now())
+    fs.mkdirSync(tempDir, { recursive: true })
+
+    try {
+      const mockDriver = {
+        ctx: {
+          async cookies(urls) {
+            mockCalls.push({ method: 'cookies', urls })
+            return [
+              { name: 'c_user', value: '1000888' },
+              { name: 'xs', value: 'xs_browser_synced' },
+              { name: 'hatch_sess', value: 'sess_browser_synced' },
+            ]
+          },
+        },
+        async requirePage() {
+          mockCalls.push({ method: 'requirePage' })
+          return {
+            async evaluate(fn) {
+              mockCalls.push({ method: 'evaluate' })
+              const origFetch = globalThis.fetch
+              globalThis.fetch = async (url, init = {}) => {
+                mockCalls.push({ method: 'inPageFetch', url, init })
+                if (url === '/api/session') {
+                  return new Response(
+                    JSON.stringify({
+                      status: 'assigned',
+                      vm_id: 'browser-vm-uuid-999',
+                      endpoint_url: 'wss://browser-vm-uuid-999.metaaivm.com/',
+                    }),
+                    { status: 200, headers: { 'Content-Type': 'application/json' } }
+                  )
+                }
+                if (url === '/api/hatch/vm/wake') {
+                  const body = JSON.parse(init.body)
+                  assert.equal(body.vm_id, 'browser-vm-uuid-999')
+                  assert.equal(body.retry_count, 0)
+                  assert.ok(body.connect_attempt_id)
+                  return new Response(
+                    JSON.stringify({ status: 'wake_requested' }),
+                    { status: 200, headers: { 'Content-Type': 'application/json' } }
+                  )
+                }
+                if (url === '/api/hatch/token') {
+                  const body = JSON.parse(init.body)
+                  assert.equal(body.vmName, 'browser-vm-uuid-999')
+                  assert.equal(body.vmAddress, 'wss://browser-vm-uuid-999.metaaivm.com/')
+                  return new Response(
+                    JSON.stringify({
+                      token: 's0:live_browser_token_jwt',
+                      notary_token: 'endorsement.v1.live_notary',
+                      expires_in: 43200,
+                    }),
+                    { status: 200, headers: { 'Content-Type': 'application/json' } }
+                  )
+                }
+                throw new Error(`Unexpected in-page fetch: ${url}`)
+              }
+
+              try {
+                return await fn()
+              } finally {
+                globalThis.fetch = origFetch
+              }
+            },
+          }
+        },
+        async gotoApp() {
+          mockCalls.push({ method: 'gotoApp' })
+        },
+      }
+
+      const tm = new TokenManager({
+        driver: mockDriver,
+        profileDir: tempDir,
+        storageDir: tempDir,
+      })
+
+      assert.equal(tm.browserDriver, mockDriver)
+
+      const before = Date.now()
+      const session = await tm.ensureValidSession()
+      const after = Date.now()
+
+      assert.equal(session.vm_id, 'browser-vm-uuid-999')
+      assert.equal(session.endpoint_url, 'wss://browser-vm-uuid-999.metaaivm.com/')
+      assert.equal(session.auth_token, 's0:live_browser_token_jwt')
+      assert.equal(session.notary_token, 'endorsement.v1.live_notary')
+
+      // 5-minute safety buffer check
+      const expectedBufferMs = (43200 - 300) * 1000
+      assert.ok(session.expiresAt >= before + expectedBufferMs)
+      assert.ok(session.expiresAt <= after + expectedBufferMs)
+
+      // Verify execution order in mock driver
+      const methods = mockCalls.map((c) => c.method)
+      assert.ok(methods.includes('requirePage'))
+      assert.ok(methods.includes('gotoApp'))
+      assert.ok(methods.includes('evaluate'))
+      assert.ok(methods.includes('cookies'))
+
+      // Verify cookies written to disk
+      const diskCookies = JSON.parse(
+        fs.readFileSync(path.join(tempDir, 'cookies.json'), 'utf-8')
+      )
+      assert.equal(diskCookies.c_user, '1000888')
+      assert.equal(diskCookies.xs, 'xs_browser_synced')
+      assert.equal(diskCookies.hatch_sess, 'sess_browser_synced')
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true })
+    }
+  })
+
+  // ----------------------------------------------------------------
+  // Test 12: Browser-backed error handling (401/403/Forbidden)
+  // ----------------------------------------------------------------
+  await test('Browser-backed session resolution converts 401/403 to AuthSessionExpiredError', async () => {
+    // 403 test
+    const mockDriver403 = {
+      async requirePage() {
+        return {
+          async evaluate() {
+            throw new Error('GET /api/session failed with HTTP 403: {"error":"Forbidden"}')
+          },
+        }
+      },
+      async gotoApp() {},
+    }
+
+    const tm403 = new TokenManager({ driver: mockDriver403 })
+    await assert.rejects(
+      async () => {
+        await tm403.ensureValidSession()
+      },
+      (err) => {
+        assert.ok(err instanceof AuthSessionExpiredError)
+        assert.equal(err.status, 403)
+        assert.match(err.message, /Browser session resolution failed/)
+        return true
+      }
+    )
+
+    // 401 test
+    const mockDriver401 = {
+      async requirePage() {
+        return {
+          async evaluate() {
+            throw new Error('POST /api/hatch/token failed with HTTP 401: Unauthorized')
+          },
+        }
+      },
+      async gotoApp() {},
+    }
+
+    const tm401 = new TokenManager({ driver: mockDriver401 })
+    await assert.rejects(
+      async () => {
+        await tm401.ensureValidSession()
+      },
+      (err) => {
+        assert.ok(err instanceof AuthSessionExpiredError)
+        assert.equal(err.status, 401)
+        assert.match(err.message, /Browser session resolution failed/)
+        return true
+      }
+    )
+  })
+
+  // ----------------------------------------------------------------
+  // Test 13: Browser driver session caching and invalidation
+  // ----------------------------------------------------------------
+  await test('Browser-backed session caching and invalidateToken()', async () => {
+    let evaluateCount = 0
+    const mockDriver = {
+      async requirePage() {
+        return {
+          async evaluate() {
+            evaluateCount++
+            return {
+              vm_id: 'cache-vm',
+              endpoint_url: 'wss://cache-vm',
+              auth_token: 'tok-cache',
+              notary_token: 'notary-cache',
+              expires_in: 3600,
+            }
+          },
+        }
+      },
+      async gotoApp() {},
+    }
+
+    const tm = new TokenManager({ driver: mockDriver })
+
+    // 1st call -> evaluateCount 1
+    const s1 = await tm.ensureValidSession()
+    assert.equal(evaluateCount, 1)
+    assert.equal(s1.vm_id, 'cache-vm')
+
+    // 2nd call -> cached, evaluateCount remains 1
+    const s2 = await tm.ensureValidSession()
+    assert.equal(evaluateCount, 1)
+    assert.equal(s2, s1)
+
+    // Concurrent calls deduplicate
+    const results = await Promise.all([
+      tm.ensureValidSession(),
+      tm.ensureValidSession(),
+      tm.ensureValidSession(),
+    ])
+    assert.equal(evaluateCount, 1)
+    assert.equal(results.length, 3)
+
+    // Invalidation forces re-evaluation
+    tm.invalidateToken()
+    assert.equal(tm.getCachedSession(), null)
+    assert.equal(tm.isSessionValid(), false)
+
+    const s3 = await tm.ensureValidSession()
+    assert.equal(evaluateCount, 2)
+    assert.equal(s3.vm_id, 'cache-vm')
+  })
+
+  // ----------------------------------------------------------------
+  // Test 14: Constructor accepts both options.driver and options.browserDriver
+  // ----------------------------------------------------------------
+  await test('Constructor accepts both options.driver and options.browserDriver aliases', () => {
+    const d1 = { name: 'driver1' }
+    const d2 = { name: 'driver2' }
+
+    const tm1 = new TokenManager({ driver: d1 })
+    assert.equal(tm1.browserDriver, d1)
+
+    const tm2 = new TokenManager({ browserDriver: d2 })
+    assert.equal(tm2.browserDriver, d2)
+
+    const tm3 = new TokenManager({})
+    assert.equal(tm3.browserDriver, null)
   })
 
   // ----------------------------------------------------------------

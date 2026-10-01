@@ -79,7 +79,7 @@ async function readStdin() {
 
 async function healthy() {
   try {
-    const r = await fetch(ORIGIN + '/health', { signal: AbortSignal.timeout(1500) })
+    const r = await fetch(ORIGIN + '/health', { signal: AbortSignal.timeout(10000) })
     return r.ok
   } catch {
     return false

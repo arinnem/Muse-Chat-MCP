@@ -114,7 +114,9 @@ export class MuseTransport {
       try {
         if (!this.noiseClient) {
           if (!this.tokenManager) {
-            this.tokenManager = new DefaultTokenManager()
+            this.tokenManager = new DefaultTokenManager({
+              driver: this.browserDriver,
+            })
           }
           this.noiseClient = new this.NoiseClientClass({
             tokenManager: this.tokenManager,
@@ -212,9 +214,20 @@ export class MuseTransport {
    */
   async chatStream(prompt, opts = {}) {
     if (this.activeTransport === 'noise' && !this.fallbackState.active) {
+      let tokensEmitted = 0
+      const wrappedOpts = {
+        ...opts,
+        onDelta: (chunk) => {
+          tokensEmitted++
+          if (typeof opts.onDelta === 'function') {
+            opts.onDelta(chunk)
+          }
+        },
+      }
+
       try {
         const client = await this._getNoiseClient()
-        const result = await client.chatStream(prompt, opts)
+        const result = await client.chatStream(prompt, wrappedOpts)
         const text = result.reply || result.text || ''
         return {
           reply: text,
@@ -230,6 +243,13 @@ export class MuseTransport {
         console.warn(`[muse-transport] Noise transport unavailable (${reason}), falling back to browser driver`)
         this._triggerFallback(reason)
         await this._cleanupNoise()
+
+        if (tokensEmitted > 0) {
+          // A partial response has already been transmitted to the client (e.g. over SSE in muse-openai-shim.mjs).
+          // Do NOT silently restart from word 0 into the open SSE stream (which would emit duplicated text and violate monotonic streaming).
+          throw new Error(`Noise stream interrupted mid-stream after ${tokensEmitted} token delta(s) emitted: ${reason}`)
+        }
+
         return await this.browserDriver.chatStream(prompt, opts)
       }
     }

@@ -795,8 +795,7 @@ test("Suite 4.1: End-to-end encrypted loopback with small ServiceFrame", async (
   assert.strictEqual(loopbackFrames.length, 1);
 
   // Verify that the sent raw frame is encrypted (AES-GCM tag present, ciphertext does not contain plaintext string)
-  const decodedTransportFrame = decodeNoiseTransportFrame(loopbackFrames[0]);
-  const rawString = new TextDecoder().decode(decodedTransportFrame.payload);
+  const rawString = new TextDecoder().decode(loopbackFrames[0]);
   assert.strictEqual(rawString.includes("Say hello in three words."), false, "Payload over wire must be ciphertext");
 
   // Loopback to receiver
@@ -850,7 +849,7 @@ test("Suite 4.2: End-to-end encrypted loopback with large payload (> 65,489 byte
   assert.deepStrictEqual(finalFrame.request.body, largeBody, "Large body must reassemble and decrypt with exact bitwise equality");
 });
 
-test("Suite 4.3: End-to-end loopback with out-of-order encrypted transport chunks", async () => {
+test("Suite 4.3: End-to-end loopback enforces sequential AEAD delivery (out-of-order fails closed)", async () => {
   const sharedKey = new Uint8Array(32).fill(0x7c);
   const txCipher = new CipherState(sharedKey);
   const rxCipher = new CipherState(sharedKey);
@@ -874,17 +873,12 @@ test("Suite 4.3: End-to-end loopback with out-of-order encrypted transport chunk
   const sent = await transport.sendFrame(3n, originalFrame);
   assert.strictEqual(sent.length, 3);
 
-  // Reorder chunks: 2, 0, 1
-  const step1 = await transport.handleIncoming(sent[2]);
-  assert.strictEqual(step1, null);
-
-  const step2 = await transport.handleIncoming(sent[0]);
-  assert.strictEqual(step2, null);
-
-  const finalFrame = await transport.handleIncoming(sent[1]);
-  assert(finalFrame instanceof ServiceFrame);
-  assert.strictEqual(finalFrame.stream_id, 3n);
-  assert.deepStrictEqual(finalFrame.request.body, largeBody, "Out-of-order encrypted chunks must reassemble and decrypt properly");
+  // Out-of-order wire delivery (chunk 2 before chunk 0) violates AEAD sequential nonces and must fail closed
+  await assert.rejects(
+    async () => transport.handleIncoming(sent[2]),
+    (err) => err.name === "OperationError" || /operation/i.test(err.message),
+    "Out-of-order AEAD ciphertext delivery must fail closed"
+  );
 });
 
 test("Suite 4.4: Stream multiplexing with monotonic stream IDs and callbacks", async () => {
@@ -993,18 +987,18 @@ test("Suite 4.6: Empty ServiceResponse payload rejection", async () => {
 
   // Create an empty ServiceResponse: tag 1 (0x0a), length 0 (0x00)
   const emptyServiceResponse = new Uint8Array([0x0a, 0x00]);
-  const ciphertext = await txCipher.encryptWithAd(new Uint8Array(0), emptyServiceResponse);
 
   const transportFrame = new NoiseTransportFrame({
     chunk_id: 1111n,
     chunk_index: 0,
     total_chunks: 1,
-    payload: ciphertext,
+    payload: emptyServiceResponse,
   });
   const encoded = encodeNoiseTransportFrame(transportFrame);
+  const ciphertext = await txCipher.encryptWithAd(new Uint8Array(0), encoded);
 
   await assert.rejects(
-    async () => transport.handleIncoming(encoded),
+    async () => transport.handleIncoming(ciphertext),
     /empty ServiceResponse payload/,
     "Empty ServiceResponse payload must be rejected"
   );

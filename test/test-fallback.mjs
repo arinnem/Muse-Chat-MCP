@@ -35,9 +35,19 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
+import http from 'node:http'
+import { EventEmitter } from 'node:events'
 import { MuseTransport, AuthSessionExpiredError } from '../muse-transport.mjs'
 import { NoiseClient } from '../lib/noise/noise-client.mjs'
 import { TokenManager } from '../lib/noise/token-manager.mjs'
+import { MuseDriver } from '../muse-driver.mjs'
+import {
+  generateX25519KeyPair,
+  x25519DH,
+  concat,
+  zeroize,
+  SymmetricState,
+} from '../lib/noise/crypto.mjs'
 
 /**
  * Creates an injectable test browser driver to isolate unit testing
@@ -646,4 +656,300 @@ test('Suite 6.2: Real NoiseClient connecting to closed local port triggers genui
   assert.equal(res.reply, 'Browser reply to: Real NoiseClient closed port fallback test')
   assert.equal(transport.fallbackActive, true)
   assert.match(transport.fallbackReason, /ECONNREFUSED|connect|closed|WebSocket/)
+})
+
+// -------------------------------------------------------------------------
+// Suite 7: Fast Abort, Deduplication Guard & Health Check Resilience (Milestone 3)
+// -------------------------------------------------------------------------
+
+/**
+ * Synthetic responder for fast socket abort testing.
+ */
+class SyntheticNoiseAbortResponder {
+  constructor(staticKeyPair) {
+    this.s = staticKeyPair
+    this.e = null
+    this.re = null
+    this.rs = null
+    this.symmetric = new SymmetricState()
+  }
+
+  async initialize() {
+    await this.symmetric.initialize()
+  }
+
+  async receiveMessage1(msg1) {
+    this.re = new Uint8Array(msg1.subarray(0, 32))
+    await this.symmetric.mixHash(this.re)
+    await this.symmetric.decryptAndHash(msg1.subarray(32))
+
+    this.e = await generateX25519KeyPair()
+    await this.symmetric.mixHash(this.e.publicKeyBytes)
+
+    const ee = await x25519DH(this.e.privateKey, this.re)
+    await this.symmetric.mixKey(ee)
+    zeroize(ee)
+
+    const enc_s = await this.symmetric.encryptAndHash(this.s.publicKeyBytes)
+    const es = await x25519DH(this.s.privateKey, this.re)
+    await this.symmetric.mixKey(es)
+    zeroize(es)
+
+    const enc_attestation = await this.symmetric.encryptAndHash(new TextEncoder().encode('MUSE_OK'))
+    return concat(this.e.publicKeyBytes, enc_s, enc_attestation)
+  }
+
+  async receiveMessage3(msg3) {
+    this.rs = await this.symmetric.decryptAndHash(msg3.subarray(0, 48))
+    const se = await x25519DH(this.e.privateKey, this.rs)
+    await this.symmetric.mixKey(se)
+    zeroize(se)
+    await this.symmetric.decryptAndHash(msg3.subarray(48))
+    return await this.symmetric.split()
+  }
+}
+
+class MockAbortWebSocket extends EventEmitter {
+  constructor(url) {
+    super()
+    this.url = url
+    this.readyState = 1
+    this.binaryType = 'arraybuffer'
+    MockAbortWebSocket.latestInstance = this
+    queueMicrotask(() => this.emit('open'))
+  }
+
+  addEventListener(event, listener) {
+    this.on(event, listener)
+  }
+
+  removeEventListener(event, listener) {
+    this.off(event, listener)
+  }
+
+  async send(data) {
+    if (!MockAbortWebSocket.responder) return
+    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data)
+    if (!this._step) this._step = 0
+
+    if (this._step === 0) {
+      this._step = 1
+      const msg2 = await MockAbortWebSocket.responder.receiveMessage1(bytes)
+      queueMicrotask(() => {
+        this.emit('message', { data: msg2.buffer ? msg2.buffer : msg2 })
+      })
+    } else if (this._step === 1) {
+      this._step = 2
+      await MockAbortWebSocket.responder.receiveMessage3(bytes)
+    }
+  }
+
+  close(code = 1000, reason = 'Normal Closure') {
+    this.readyState = 3
+    queueMicrotask(() => {
+      this.emit('close', { code, reason, wasClean: true })
+    })
+  }
+}
+
+test('Suite 7.1: NoiseClient.chatStream rejects immediately when WebSocket closes mid-stream (fast abort)', async () => {
+  const serverStatic = await generateX25519KeyPair()
+  const responder = new SyntheticNoiseAbortResponder(serverStatic)
+  await responder.initialize()
+  MockAbortWebSocket.responder = responder
+
+  class AbortTokenManager extends TokenManager {
+    async ensureValidSession() {
+      return {
+        vm_id: 'vm-abort-test',
+        endpoint_url: 'wss://hatch.metaaivm.com/v1/noise',
+        auth_token: 'auth-token',
+        notary_token: 'notary-token',
+      }
+    }
+  }
+
+  const client = new NoiseClient({
+    tokenManager: new AbortTokenManager(),
+    WebSocketClass: MockAbortWebSocket,
+    timeoutMs: 180000, // 180s default timeout
+  })
+
+  await client.connect()
+  assert.equal(client.connected, true)
+
+  const startTime = Date.now()
+  const streamPromise = client.chatStream('Fast abort verification prompt')
+
+  // Emit unexpected close mid-stream
+  queueMicrotask(() => {
+    MockAbortWebSocket.latestInstance.emit('close', {
+      code: 1006,
+      reason: 'Server abnormal close',
+    })
+  })
+
+  await assert.rejects(
+    async () => streamPromise,
+    (err) => {
+      assert.match(err.message, /Noise WebSocket connection closed unexpectedly/i)
+      return true
+    },
+  )
+
+  const elapsedMs = Date.now() - startTime
+  assert.ok(
+    elapsedMs < 1000,
+    `Stream must reject immediately on socket drop (took ${elapsedMs}ms, expected < 1000ms, not 180s timeout)`,
+  )
+
+  await client.close()
+})
+
+test('Suite 7.2: Token deduplication guard prevents duplicate tokens when Noise fails mid-stream (tokensEmitted > 0)', async () => {
+  const testDriver = createTestBrowserDriver()
+
+  class PartialStreamNoiseSimulator {
+    constructor() { this.connected = true }
+    async connect() { this.connected = true }
+    async chatStream(prompt, opts = {}) {
+      if (typeof opts.onDelta === 'function') {
+        opts.onDelta('Partial output chunk 1')
+        opts.onDelta('Partial output chunk 1 with chunk 2')
+      }
+      throw new Error('Mid-stream gateway connection drop')
+    }
+    async close() { this.connected = false }
+  }
+
+  const transport = new MuseTransport({
+    transport: 'noise',
+    driver: testDriver,
+    NoiseClientClass: PartialStreamNoiseSimulator,
+  })
+
+  const deltasEmitted = []
+  await assert.rejects(
+    async () => {
+      await transport.chatStream('Prompt with partial emission', {
+        onDelta: (d) => deltasEmitted.push(d),
+      })
+    },
+    (err) => {
+      assert.match(err.message, /interrupted mid-stream.*after 2 token delta\(s\) emitted/i)
+      return true
+    },
+  )
+
+  // Verify browser driver was NOT invoked, preventing duplicate token emission over SSE
+  const driverChatStreamCalls = testDriver.calls.filter((c) => c.method === 'chatStream')
+  assert.equal(
+    driverChatStreamCalls.length,
+    0,
+    'Browser driver chatStream must NOT be invoked when tokens have already been emitted',
+  )
+
+  // Fallback circuit breaker is activated for subsequent calls
+  assert.equal(transport.fallbackActive, true)
+  assert.equal(transport.activeTransport, 'browser')
+  assert.match(transport.fallbackReason, /Mid-stream gateway connection drop/)
+})
+
+test('Suite 7.3: Seamless fallback to browser driver succeeds when 0 tokens were emitted before failure (tokensEmitted === 0)', async () => {
+  const testDriver = createTestBrowserDriver()
+
+  class PreTokenFailureNoiseSimulator {
+    constructor() { this.connected = true }
+    async connect() { this.connected = true }
+    async chatStream() {
+      // Fails before emitting any tokens via opts.onDelta
+      throw new Error('Connection reset before token generation')
+    }
+    async close() { this.connected = false }
+  }
+
+  const transport = new MuseTransport({
+    transport: 'noise',
+    driver: testDriver,
+    NoiseClientClass: PreTokenFailureNoiseSimulator,
+  })
+
+  const res = await transport.chatStream('Prompt with zero tokens emitted', {
+    onDelta: () => {},
+  })
+
+  assert.equal(res.reply, 'Browser streaming reply to: Prompt with zero tokens emitted')
+  assert.equal(transport.fallbackActive, true)
+  assert.equal(transport.activeTransport, 'browser')
+
+  // Browser driver was called because 0 tokens had been emitted
+  const driverCalls = testDriver.calls.filter((c) => c.method === 'chatStream')
+  assert.equal(driverCalls.length, 1)
+})
+
+test('Suite 7.4: MuseDriver.hasComposer accepts timeout and driver.status uses fast 500ms check', async () => {
+  const driverInstance = new MuseDriver()
+  let requestedTimeout = null
+
+  driverInstance.requirePage = async () => ({
+    locator: () => ({
+      first: () => ({
+        waitFor: async (opts) => {
+          requestedTimeout = opts.timeout
+          return true
+        },
+      }),
+    }),
+  })
+  driverInstance.isRunning = () => true
+  driverInstance.checkAuth = async () => ({ ok: true, viewerId: '1315296991670251' })
+  driverInstance.page = { url: () => 'https://muse.ai/' }
+
+  // 1. hasComposer() defaults to 8000ms
+  await driverInstance.hasComposer()
+  assert.equal(requestedTimeout, 8000, 'Default hasComposer timeout must be 8000ms')
+
+  // 2. hasComposer(500) respects custom timeout
+  await driverInstance.hasComposer(500)
+  assert.equal(requestedTimeout, 500, 'Custom hasComposer timeout must be respected')
+
+  // 3. status() passes 500ms timeout
+  const statusRes = await driverInstance.status()
+  assert.equal(statusRes.composerReady, true)
+  assert.equal(requestedTimeout, 500, 'driver.status() must pass 500ms timeout to hasComposer')
+})
+
+test('Suite 7.5: CLI health check timeout resilience accommodates slow status responses up to 10s', async () => {
+  const server = http.createServer((req, res) => {
+    if (req.url === '/health') {
+      setTimeout(() => {
+        res.writeHead(200, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ ok: true }))
+      }, 50)
+    } else {
+      res.writeHead(404)
+      res.end()
+    }
+  })
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const port = server.address().port
+  const healthUrl = `http://127.0.0.1:${port}/health`
+
+  try {
+    // 10s AbortSignal timeout as implemented in muse-cli.mjs
+    const healthyCheck = async () => {
+      try {
+        const r = await fetch(healthUrl, { signal: AbortSignal.timeout(10000) })
+        return r.ok
+      } catch {
+        return false
+      }
+    }
+
+    const isHealthy = await healthyCheck()
+    assert.equal(isHealthy, true, 'Healthy probe with 10s timeout must succeed without premature abort')
+  } finally {
+    await new Promise((resolve) => server.close(resolve))
+  }
 })

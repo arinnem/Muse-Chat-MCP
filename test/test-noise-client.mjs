@@ -1024,17 +1024,17 @@ class SyntheticNoiseServer {
     const frameBytes = encodeServiceFrame(serviceFrame);
     const respEnvelope = new ServiceResponse({ payload: frameBytes });
     const respBytes = encodeServiceResponse(respEnvelope);
-    const ciphertext = await this.sTx.encryptWithAd(new Uint8Array(0), respBytes);
 
     const transportFrame = new NoiseTransportFrame({
       chunk_id: BigInt(Date.now()),
       chunk_index: 0,
       total_chunks: 1,
-      payload: ciphertext,
+      payload: respBytes,
     });
     const encoded = encodeNoiseTransportFrame(transportFrame);
+    const ciphertext = await this.sTx.encryptWithAd(new Uint8Array(0), encoded);
     if (this.clientWs) {
-      this.clientWs._dispatchMessage(encoded);
+      this.clientWs._dispatchMessage(ciphertext);
     }
   }
 
