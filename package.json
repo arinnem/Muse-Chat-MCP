@@ -36,7 +36,8 @@
     "muse": "node muse-cli.mjs",
     "login": "node login.mjs",
     "selftest": "node muse-server.mjs --self-test",
-    "dump": "node muse-server.mjs --dump-dom"
+    "dump": "node muse-server.mjs --dump-dom",
+    "test": "node --test test/test-proto-framing.mjs test/test-noise-crypto.mjs test/test-token-manager.mjs test/test-noise-client.mjs test/test-adversarial-*.mjs"
   },
   "engines": {
     "node": ">=18"
