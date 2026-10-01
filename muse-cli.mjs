@@ -102,7 +102,22 @@ async function ensureShim() {
   throw new Error('shim did not become ready in 30s')
 }
 
-function cleanup() { if (child) { try { child.kill() } catch {} child = null } }
+function cleanup() {
+  if (child) {
+    try {
+      if (process.platform === 'win32' && child.pid) {
+        spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+      } else {
+        child.kill()
+      }
+    } catch (err) {
+      if (err && err.code !== 'ESRCH') {
+        process.stderr.write(`[muse-cli] cleanup notice: ${err.message || err}\n`)
+      }
+    }
+    child = null
+  }
+}
 
 async function main() {
   // Session reading / media modes (no prompt).

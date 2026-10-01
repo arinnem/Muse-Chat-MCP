@@ -204,6 +204,17 @@ async function main() {
   const shimPort = process.env.MUSE_SHIM_PORT === undefined ? 8787 : Number(process.env.MUSE_SHIM_PORT)
   const startShimIfEnabled = () => { if (shimPort > 0) startShim({ port: shimPort }) }
 
+  const shutdown = async () => {
+    try {
+      await transport.close()
+    } catch (err) {
+      log('shutdown notice:', err.message || err)
+    }
+    process.exit(0)
+  }
+  process.on('SIGINT', shutdown)
+  process.on('SIGTERM', shutdown)
+
   if (args.includes('--serve-only')) {
     startShimIfEnabled()
     return // keep the process alive on the HTTP listener only
@@ -215,12 +226,6 @@ async function main() {
   log('muse MCP server ready on stdio')
   startShimIfEnabled()
 
-  const shutdown = async () => {
-    await transport.close().catch(() => {})
-    process.exit(0)
-  }
-  process.on('SIGINT', shutdown)
-  process.on('SIGTERM', shutdown)
   process.stdin.on('close', shutdown)
 }
 
