@@ -8,7 +8,7 @@ console.log('  E:\\Coding\\Muse-Chat-MCP\\.muse-profile')
 console.log('------------------------------------------------------------')
 
 try {
-  await driver.launch()
+  await driver.launch({ headless: false })
   console.log('Chrome window opened successfully.')
   console.log('Please sign in with your Meta account at https://muse.ai/')
   console.log('Waiting for login to complete (polling every 3 seconds)...')

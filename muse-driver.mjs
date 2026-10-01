@@ -92,6 +92,7 @@ export class MuseDriver {
         acceptDownloads: false,
         ...(ignoreAutomation ? { ignoreDefaultArgs: ['--enable-automation'] } : {}),
         args: [
+          '--remote-debugging-port=9222',
           '--no-first-run',
           '--no-default-browser-check',
           '--disable-blink-features=AutomationControlled',
