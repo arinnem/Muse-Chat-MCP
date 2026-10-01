@@ -56,6 +56,13 @@ npm install
 ## First run (log in once)
 
 ```bash
+npm run login             # opens Chrome, waits for Meta sign-in to complete, saves session
+# On Windows, you can also double-click login.bat
+```
+
+To verify your status afterwards:
+
+```bash
 npm run selftest          # launches Chrome, prints login/browser state, then closes
 ```
 
