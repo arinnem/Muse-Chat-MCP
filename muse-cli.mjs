@@ -20,7 +20,7 @@
  *       --base <url>        shim base url (default env MUSE_SHIM_URL or .../v1)
  *   -h, --help              show this help
  */
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -106,7 +106,7 @@ function cleanup() {
   if (child) {
     try {
       if (process.platform === 'win32' && child.pid) {
-        spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
+        spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
       } else {
         child.kill()
       }
