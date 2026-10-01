@@ -17,3 +17,6 @@ package-lock.json
 Thumbs.db
 .idea/
 .vscode/
+
+# agent teamwork scratch workspaces
+.agents/teamwork/
