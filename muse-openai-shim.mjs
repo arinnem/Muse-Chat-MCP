@@ -25,7 +25,7 @@
  * ------------------------------------------------------------------
  */
 import http from 'node:http'
-import { driver } from './muse-driver.mjs'
+import { transport } from './muse-transport.mjs'
 
 const PORT = Number(process.env.MUSE_SHIM_PORT || 8787)
 const HOST = process.env.MUSE_SHIM_HOST || '127.0.0.1'
@@ -208,9 +208,11 @@ async function handleChat(req, res, body) {
       const write = (s) => { if (!closed) { try { res.write(s) } catch { closed = true } } }
       write(chunk(id, model, created, { role: 'assistant', content: '' }))
 
-      if (wantTools) {
-        // Buffer so we can decide tool_calls vs content before emitting.
-        const r = await driver.chat(prompt, { timeoutMs, newThread, files, chat })
+      const isNoiseActive = transport.activeTransport === 'noise' && !transport.fallbackActive
+
+      if (wantTools && !isNoiseActive) {
+        // Buffer so we can decide tool_calls vs content before emitting (prompt-based for browser).
+        const r = await transport.chat(prompt, { timeoutMs, newThread, files, chat })
         if (r.error) throw new Error(r.error)
         const calls = parseToolCalls(r.reply)
         if (calls && calls.length) {
@@ -226,15 +228,41 @@ async function handleChat(req, res, body) {
         }
       } else {
         let emitted = ''
-        const r = await driver.chatStream(prompt, {
+        const r = await transport.chatStream(prompt, {
           timeoutMs, newThread, files, chat,
+          tools: wantTools ? body.tools : undefined,
           onDelta: (full) => {
             const next = full.startsWith(emitted) ? full.slice(emitted.length) : full
             emitted = full
             if (next) write(chunk(id, model, created, { content: next }))
           },
         })
-        if (r.error && !emitted) throw new Error(r.error)
+        if (r && r.error && !emitted) throw new Error(r.error)
+
+        // Native tool calling over Noise: emit native tool calls directly into SSE events
+        if (r && Array.isArray(r.toolCalls) && r.toolCalls.length > 0) {
+          const deltas = r.toolCalls.map((c, i) => ({
+            index: i,
+            id: c.id || `call_${Date.now().toString(36)}_${i}`,
+            type: 'function',
+            function: {
+              name: c.function ? c.function.name : c.name,
+              arguments: c.function ? c.function.arguments : (typeof c.arguments === 'string' ? c.arguments : JSON.stringify(c.arguments || {})),
+            },
+          }))
+          write(chunk(id, model, created, { tool_calls: deltas }))
+          finishReason = 'tool_calls'
+        } else if (wantTools) {
+          const calls = parseToolCalls(r?.reply || r?.text)
+          if (calls && calls.length) {
+            const deltas = calls.map((c, i) => ({
+              index: i, id: c.id, type: 'function',
+              function: { name: c.function.name, arguments: c.function.arguments },
+            }))
+            write(chunk(id, model, created, { tool_calls: deltas }))
+            finishReason = 'tool_calls'
+          }
+        }
       }
 
       write(chunk(id, model, created, {}, finishReason))
@@ -250,13 +278,27 @@ async function handleChat(req, res, body) {
     }
 
     // Non-streaming
-    const r = await driver.chat(prompt, { timeoutMs, newThread, files, chat })
-    if (r.error && !r.reply) throw new Error(r.error)
-    const calls = wantTools ? parseToolCalls(r.reply) : null
+    const r = await transport.chat(prompt, {
+      timeoutMs,
+      newThread,
+      files,
+      chat,
+      tools: wantTools ? body.tools : undefined,
+    })
+    if (r && r.error && !r.reply && !r.text) throw new Error(r.error)
+
+    let calls = null
+    if (wantTools) {
+      if (r && Array.isArray(r.toolCalls) && r.toolCalls.length > 0) {
+        calls = r.toolCalls
+      } else {
+        calls = parseToolCalls(r?.reply || r?.text)
+      }
+    }
 
     const message = calls && calls.length
       ? { role: 'assistant', content: null, tool_calls: calls }
-      : { role: 'assistant', content: r.reply || '' }
+      : { role: 'assistant', content: r?.reply || r?.text || '' }
 
     res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
     res.end(JSON.stringify({
@@ -303,7 +345,7 @@ export function startShim({ port = PORT, host = HOST } = {}) {
     try {
       if (req.method === 'GET' && (url === '/health' || url === '/')) {
         let st = { browserRunning: false, loggedIn: false }
-        try { st = await driver.status() } catch {}
+        try { st = await transport.status() } catch {}
         res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
         return res.end(JSON.stringify({ ok: true, ...st, models: MODEL_IDS }))
       }
@@ -319,7 +361,7 @@ export function startShim({ port = PORT, host = HOST } = {}) {
       // Session reading (Muse chats): list chats, or read one chat (optionally opening it first).
       if (req.method === 'GET' && url === '/v1/muse/chats') {
         const params = new URL(req.url, 'http://localhost').searchParams
-        const data = await driver.listChats(params.get('query') || undefined)
+        const data = await transport.listChats(params.get('query') || undefined)
         res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
         return res.end(JSON.stringify(data))
       }
@@ -327,8 +369,8 @@ export function startShim({ port = PORT, host = HOST } = {}) {
       if (req.method === 'GET' && url === '/v1/muse/chat') {
         const params = new URL(req.url, 'http://localhost').searchParams
         const target = params.get('target')
-        if (target) await driver.openChat(/^\d+$/.test(target) ? Number(target) : target)
-        const data = await driver.readChat(Number(params.get('max')) || 100)
+        if (target) await transport.openChat(/^\d+$/.test(target) ? Number(target) : target)
+        const data = await transport.readChat(Number(params.get('max')) || 100)
         res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
         return res.end(JSON.stringify(data))
       }
@@ -337,7 +379,7 @@ export function startShim({ port = PORT, host = HOST } = {}) {
         const params = new URL(req.url, 'http://localhost').searchParams
         const target = params.get('target')
         const download = params.get('download') === '1' || params.get('download') === 'true'
-        const data = await driver.chatMedia(target || undefined, { download, dir: params.get('dir') || undefined })
+        const data = await transport.chatMedia(target || undefined, { download, dir: params.get('dir') || undefined })
         res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
         return res.end(JSON.stringify(data))
       }
