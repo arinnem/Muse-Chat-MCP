@@ -47,7 +47,7 @@ export const SELECTORS = {
 const APP_URL = process.env.MUSE_URL || 'https://muse.ai/'
 const PROFILE_DIR =
   process.env.MUSE_PROFILE_DIR || path.join(__dirname, '.muse-profile')
-const HEADLESS = process.env.MUSE_HEADLESS === '1'
+const HEADLESS = process.env.MUSE_HEADLESS !== '0'
 const CHANNEL = process.env.MUSE_CHANNEL || 'chrome'
 const LAUNCH_TIMEOUT = Number(process.env.MUSE_LAUNCH_TIMEOUT_MS || 60000)
 // Streaming: only surface text that has been stable this long, so we never emit
@@ -63,6 +63,7 @@ export class MuseDriver {
     this.page = null
     this.browser = null
     this.lastError = null
+    this._currentHeadless = HEADLESS
     this._queue = Promise.resolve()
   }
 
@@ -77,14 +78,16 @@ export class MuseDriver {
     return !!(this.ctx && this.page && !this.page.isClosed())
   }
 
-  async launch() {
+  async launch(options = {}) {
     if (this.isRunning()) return this.page
     const { chromium } = await import('playwright-core')
+    const headless = options.headless !== undefined ? options.headless : HEADLESS
+    this._currentHeadless = headless
 
     const launchPersistent = (ignoreAutomation = false) =>
       chromium.launchPersistentContext(PROFILE_DIR, {
         channel: CHANNEL,
-        headless: HEADLESS,
+        headless,
         viewport: { width: 1366, height: 900 },
         acceptDownloads: false,
         ...(ignoreAutomation ? { ignoreDefaultArgs: ['--enable-automation'] } : {}),
@@ -211,12 +214,19 @@ export class MuseDriver {
       viewerId: auth.viewerId || null,
       composerReady,
       profileDir: PROFILE_DIR,
-      headless: HEADLESS,
+      headless: this.ctx ? (this._currentHeadless ?? HEADLESS) : HEADLESS,
     }
   }
 
   /** Open the app and, if needed, wait for the user to complete Meta login. */
   async login(timeoutMs = 300000) {
+    const authBefore = await this.checkAuth().catch(() => ({ ok: false }))
+    if (authBefore.ok) return { loggedIn: true, viewerId: authBefore.viewerId || null }
+
+    if (this.isRunning()) {
+      await this.close()
+    }
+    await this.launch({ headless: false })
     await this.gotoApp()
     const deadline = Date.now() + timeoutMs
     while (Date.now() < deadline) {

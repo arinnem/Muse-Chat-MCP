@@ -73,6 +73,19 @@ export class MuseTransport {
   }
 
   /**
+   * Checks whether the fallback state has cooled down and should auto-recover
+   * to try the primary Noise transport again.
+   */
+  _checkAutoRecovery(cooldownMs = 30000) {
+    if (this.fallbackState.active && this.configTransport === 'noise') {
+      const elapsed = Date.now() - (this.fallbackState.failedAt || 0)
+      if (elapsed > cooldownMs) {
+        this.resetFallback()
+      }
+    }
+  }
+
+  /**
    * Internal circuit-breaker trigger. Sets activeTransport to 'browser'
    * and records diagnostic state.
    */
@@ -136,6 +149,7 @@ export class MuseTransport {
    * Returns unified status satisfying MCP muse_status and OpenAI /health.
    */
   async status() {
+    this._checkAutoRecovery()
     let browserStatus = {
       browserRunning: false,
       url: null,
@@ -183,11 +197,15 @@ export class MuseTransport {
    * Unary chat: sends prompt and returns assistant reply.
    */
   async chat(prompt, opts = {}) {
+    this._checkAutoRecovery()
     if (this.activeTransport === 'noise' && !this.fallbackState.active) {
       try {
         const client = await this._getNoiseClient()
         const result = await client.chatStream(prompt, opts)
         const text = result.reply || result.text || ''
+        if (!text) {
+          throw new Error('Noise transport returned empty reply, falling back to browser driver')
+        }
         return {
           reply: text,
           text,
@@ -213,6 +231,7 @@ export class MuseTransport {
    * Streaming chat: emits monotonic deltas to opts.onDelta and returns assistant reply.
    */
   async chatStream(prompt, opts = {}) {
+    this._checkAutoRecovery()
     if (this.activeTransport === 'noise' && !this.fallbackState.active) {
       let tokensEmitted = 0
       const wrappedOpts = {
@@ -229,6 +248,9 @@ export class MuseTransport {
         const client = await this._getNoiseClient()
         const result = await client.chatStream(prompt, wrappedOpts)
         const text = result.reply || result.text || ''
+        if (!text && tokensEmitted === 0) {
+          throw new Error('Noise transport returned empty reply, falling back to browser driver')
+        }
         return {
           reply: text,
           text,
