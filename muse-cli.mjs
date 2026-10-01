@@ -199,4 +199,8 @@ async function main() {
 
 main()
   .catch((e) => { process.stderr.write('[muse-cli] ' + (e && e.message ? e.message : String(e)) + '\n'); process.exitCode = 1 })
-  .finally(() => { cleanup(); setTimeout(() => process.exit(process.exitCode || 0), 50) })
+  .finally(() => {
+    cleanup()
+    const timer = setTimeout(() => process.exit(process.exitCode || 0), 200)
+    timer.unref()
+  })
