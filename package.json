@@ -19,13 +19,13 @@
   ],
   "license": "MIT",
   "author": "duclm1x1",
-  "homepage": "https://github.com/duclm1x1/Muse-Chat-MCP#readme",
+  "homepage": "https://github.com/arinnem/Muse-Chat-MCP#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/duclm1x1/Muse-Chat-MCP.git"
+    "url": "git+https://github.com/arinnem/Muse-Chat-MCP.git"
   },
   "bugs": {
-    "url": "https://github.com/duclm1x1/Muse-Chat-MCP/issues"
+    "url": "https://github.com/arinnem/Muse-Chat-MCP/issues"
   },
   "bin": {
     "muse-mcp": "muse-server.mjs",

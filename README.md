@@ -46,7 +46,7 @@ Plus a tiny **CLI** (`muse-cli.mjs`) for one-shot generation from scripts.
 ## Install
 
 ```bash
-git clone https://github.com/duclm1x1/Muse-Chat-MCP.git
+git clone https://github.com/arinnem/Muse-Chat-MCP.git
 cd Muse-Chat-MCP
 npm install
 ```

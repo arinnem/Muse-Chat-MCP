@@ -5,7 +5,7 @@ Thanks for helping! This project automates a real browser, so a few invariants m
 ## Dev setup
 
 ```bash
-git clone https://github.com/duclm1x1/Muse-Chat-MCP.git
+git clone https://github.com/arinnem/Muse-Chat-MCP.git
 cd Muse-Chat-MCP
 npm install
 npm run selftest        # log in to Muse once
